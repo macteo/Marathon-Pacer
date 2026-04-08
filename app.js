@@ -8,12 +8,19 @@
   /** @typedef {{id:string, type:"group", repeats:number, segments:Segment[]}} GroupBlock */
   /** @typedef {SegmentBlock|GroupBlock} Block */
 
-  /** @type {{target:number, blocks:Block[], finalPaceMin:number|null, finalPaceSec:number|null}} */
+  // Sensible defaults so new fields are pre-filled and live updates are
+  // visible immediately — the user shouldn't have to type every box from
+  // scratch before the totals start moving.
+  const DEFAULT_DISTANCE_KM = 1;
+  const DEFAULT_PACE_MIN = 5;
+  const DEFAULT_PACE_SEC = 0;
+
+  /** @type {{target:number, blocks:Block[], finalPaceMin:number, finalPaceSec:number}} */
   let state = {
     target: 42.195,
     blocks: [],
-    finalPaceMin: null,
-    finalPaceSec: null,
+    finalPaceMin: DEFAULT_PACE_MIN,
+    finalPaceSec: DEFAULT_PACE_SEC,
   };
 
   // ----- Utilities -----
@@ -80,7 +87,11 @@
     }
   }
 
-  function makeSegment(distance = 0, paceMin = 0, paceSec = 0) {
+  function makeSegment(
+    distance = DEFAULT_DISTANCE_KM,
+    paceMin = DEFAULT_PACE_MIN,
+    paceSec = DEFAULT_PACE_SEC
+  ) {
     return { id: uid(), distance, paceMin, paceSec };
   }
 
@@ -170,9 +181,11 @@
     const se = $(".seg-sec", node);
     const del = $(".seg-del", node);
 
-    dist.value = seg.distance || "";
-    mi.value = seg.paceMin || "";
-    se.value = seg.paceSec || "";
+    // Show actual values (including 0) instead of falling back to "" so
+    // the user always starts from a real number rather than a blank box.
+    dist.value = seg.distance == null ? "" : String(seg.distance);
+    mi.value = seg.paceMin == null ? "" : String(seg.paceMin);
+    se.value = seg.paceSec == null ? "" : String(seg.paceSec);
 
     dist.addEventListener("input", () => {
       seg.distance = parseNum(dist.value);
@@ -277,10 +290,190 @@
     $("#target-label").textContent = formatDistance(state.target);
   }
 
+  // ----- Pace chart (SVG area chart) -----
+  const SVG_NS = "http://www.w3.org/2000/svg";
+
+  function flattenSegmentsForChart() {
+    const out = [];
+    for (const block of state.blocks) {
+      if (block.type === "segment") {
+        out.push({ seg: block.segment, isFinal: false });
+      } else {
+        const reps = Math.max(1, Math.floor(parseNum(block.repeats, 1)));
+        for (let i = 0; i < reps; i++) {
+          for (const s of block.segments) out.push({ seg: s, isFinal: false });
+        }
+      }
+    }
+    const totals = computeTotals();
+    const remaining = Math.max(0, state.target - totals.distance);
+    if (remaining > 0.0005) {
+      out.push({
+        seg: {
+          distance: remaining,
+          paceMin: state.finalPaceMin || 0,
+          paceSec: state.finalPaceSec || 0,
+        },
+        isFinal: true,
+      });
+    }
+    // Drop entries with non-positive distance or pace — they can't be plotted.
+    return out.filter(
+      (e) =>
+        parseNum(e.seg.distance) > 0 &&
+        paceToSeconds(e.seg.paceMin, e.seg.paceSec) > 0
+    );
+  }
+
+  function fmtPaceShort(sec) {
+    const m = Math.floor(sec / 60);
+    let s = Math.round(sec % 60);
+    let mm = m;
+    if (s === 60) {
+      mm += 1;
+      s = 0;
+    }
+    return `${mm}'${String(s).padStart(2, "0")}`;
+  }
+
+  function fmtKmShort(km) {
+    if (km >= 10) return km.toFixed(1);
+    return km.toFixed(2);
+  }
+
+  function renderChart() {
+    const svg = $("#pace-chart");
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+    const W = 600;
+    const H = 280;
+    const padL = 56;
+    const padR = 14;
+    const padT = 14;
+    const padB = 36;
+    const innerW = W - padL - padR;
+    const innerH = H - padT - padB;
+
+    const data = flattenSegmentsForChart();
+    if (data.length === 0) {
+      const t = document.createElementNS(SVG_NS, "text");
+      t.setAttribute("x", String(W / 2));
+      t.setAttribute("y", String(H / 2));
+      t.setAttribute("text-anchor", "middle");
+      t.setAttribute("class", "empty-text");
+      t.textContent = "Add a segment to see your pace chart.";
+      svg.appendChild(t);
+      return;
+    }
+
+    const totalKm = data.reduce((s, e) => s + parseNum(e.seg.distance), 0);
+    const paces = data.map((e) => paceToSeconds(e.seg.paceMin, e.seg.paceSec));
+    const rawMin = Math.min(...paces);
+    const rawMax = Math.max(...paces);
+    // Pad the y range so flat plans still look reasonable.
+    const span = Math.max(30, rawMax - rawMin);
+    const yMin = Math.max(0, rawMin - span * 0.25);
+    const yMax = rawMax + span * 0.25;
+
+    const xScale = (km) => padL + (km / totalKm) * innerW;
+    // Y axis: lower pace value (faster) on TOP, slower at BOTTOM — the same
+    // way race split tables are conventionally read.
+    const yScale = (sec) => padT + ((sec - yMin) / (yMax - yMin)) * innerH;
+    const baseY = padT + innerH;
+
+    // ---- Grid + Y axis labels ----
+    const yTicks = 4;
+    for (let i = 0; i <= yTicks; i++) {
+      const v = yMin + ((yMax - yMin) * i) / yTicks;
+      const y = yScale(v);
+      const line = document.createElementNS(SVG_NS, "line");
+      line.setAttribute("x1", String(padL));
+      line.setAttribute("x2", String(W - padR));
+      line.setAttribute("y1", String(y));
+      line.setAttribute("y2", String(y));
+      line.setAttribute("class", "grid-line");
+      svg.appendChild(line);
+
+      const lbl = document.createElementNS(SVG_NS, "text");
+      lbl.setAttribute("x", String(padL - 8));
+      lbl.setAttribute("y", String(y + 4));
+      lbl.setAttribute("text-anchor", "end");
+      lbl.setAttribute("class", "axis-label");
+      lbl.textContent = fmtPaceShort(v);
+      svg.appendChild(lbl);
+    }
+
+    // ---- Build the stepped path for the area + line ----
+    // We render the main (non-final) segments and the final segment as
+    // separate shapes so the final one can be highlighted in the accent color.
+    const points = []; // {x, y, isFinal}
+    let cumKm = 0;
+    for (const entry of data) {
+      const d = parseNum(entry.seg.distance);
+      const p = paceToSeconds(entry.seg.paceMin, entry.seg.paceSec);
+      const x1 = xScale(cumKm);
+      const x2 = xScale(cumKm + d);
+      const y = yScale(p);
+      points.push({ x: x1, y, isFinal: entry.isFinal });
+      points.push({ x: x2, y, isFinal: entry.isFinal });
+      cumKm += d;
+    }
+
+    // Find where the final-segment block starts (first isFinal point).
+    const finalStartIdx = points.findIndex((p) => p.isFinal);
+    const mainPoints = finalStartIdx === -1 ? points : points.slice(0, finalStartIdx);
+    const finalPoints = finalStartIdx === -1 ? [] : points.slice(finalStartIdx);
+
+    function buildArea(pts, fillClass, lineClass) {
+      if (pts.length === 0) return;
+      // Filled area (closed to baseline)
+      const area = document.createElementNS(SVG_NS, "path");
+      let aD = `M ${pts[0].x} ${baseY} L ${pts[0].x} ${pts[0].y}`;
+      for (let i = 1; i < pts.length; i++) aD += ` L ${pts[i].x} ${pts[i].y}`;
+      aD += ` L ${pts[pts.length - 1].x} ${baseY} Z`;
+      area.setAttribute("d", aD);
+      area.setAttribute("class", fillClass);
+      svg.appendChild(area);
+
+      // Top line on its own so it has a crisp stroke
+      const line = document.createElementNS(SVG_NS, "path");
+      let lD = `M ${pts[0].x} ${pts[0].y}`;
+      for (let i = 1; i < pts.length; i++) lD += ` L ${pts[i].x} ${pts[i].y}`;
+      line.setAttribute("d", lD);
+      line.setAttribute("class", lineClass);
+      svg.appendChild(line);
+    }
+
+    buildArea(mainPoints, "area-fill", "area-line");
+    buildArea(finalPoints, "final-fill", "final-line");
+
+    // ---- X axis labels (5 ticks) ----
+    const xTicks = 5;
+    for (let i = 0; i <= xTicks; i++) {
+      const km = (totalKm * i) / xTicks;
+      const x = xScale(km);
+      const lbl = document.createElementNS(SVG_NS, "text");
+      lbl.setAttribute("x", String(x));
+      lbl.setAttribute("y", String(H - 18));
+      lbl.setAttribute("text-anchor", "middle");
+      lbl.setAttribute("class", "axis-label");
+      lbl.textContent = fmtKmShort(km);
+      svg.appendChild(lbl);
+    }
+    const unit = document.createElementNS(SVG_NS, "text");
+    unit.setAttribute("x", String(padL + innerW / 2));
+    unit.setAttribute("y", String(H - 4));
+    unit.setAttribute("text-anchor", "middle");
+    unit.setAttribute("class", "axis-label");
+    unit.textContent = "km";
+    svg.appendChild(unit);
+  }
+
   // Recompute totals and persist without rebuilding inputs (so the
   // on-screen keyboard keeps focus while the user is typing).
   function recalc() {
     renderFinalAndSummary();
+    renderChart();
     save();
   }
 
@@ -312,6 +505,9 @@
   presetSel.addEventListener("change", () => {
     if (presetSel.value === "custom") {
       customWrap.hidden = false;
+      // Pre-fill custom box with the current target so the user has a real
+      // value to edit instead of an empty field.
+      if (!customInput.value) customInput.value = String(state.target);
       customInput.focus();
       state.target = parseNum(customInput.value, state.target);
     } else {
@@ -366,8 +562,12 @@
 
   // ----- Init -----
   load();
-  if (state.finalPaceMin != null) finalMin.value = state.finalPaceMin;
-  if (state.finalPaceSec != null) finalSec.value = state.finalPaceSec;
+  // Make sure final pace inputs are pre-filled (for old saved state where
+  // they may still be null).
+  if (state.finalPaceMin == null) state.finalPaceMin = DEFAULT_PACE_MIN;
+  if (state.finalPaceSec == null) state.finalPaceSec = DEFAULT_PACE_SEC;
+  finalMin.value = String(state.finalPaceMin);
+  finalSec.value = String(state.finalPaceSec);
   syncTargetInputs();
   update();
 })();
