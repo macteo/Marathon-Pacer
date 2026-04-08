@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b6efd" />
+  <meta name="description" content="Plan marathon and running paces with segments and repeats." />
+  <title>Marathon Pacer</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='52' font-size='52'%3E🏃%3C/text%3E%3C/svg%3E" />
+</head>
+<body>
+  <header class="app-header">
+    <h1>🏃 Marathon Pacer</h1>
+    <p class="tagline">Plan your race by segments &amp; repeats</p>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Target distance</h2>
+      <div class="target-row">
+        <select id="target-preset" aria-label="Preset distance">
+          <option value="5">5 km</option>
+          <option value="10">10 km</option>
+          <option value="15">15 km</option>
+          <option value="21.0975">Half Marathon</option>
+          <option value="42.195" selected>Marathon</option>
+          <option value="custom">Custom…</option>
+        </select>
+        <label class="custom-target" id="custom-target-wrap" hidden>
+          <span>km</span>
+          <input type="number" id="target-custom" inputmode="decimal" min="0" step="0.001" placeholder="42.195" />
+        </label>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Segments</h2>
+        <div class="head-actions">
+          <button type="button" class="btn btn-ghost" id="add-segment">+ Segment</button>
+          <button type="button" class="btn btn-ghost" id="add-group">+ Repeat group</button>
+        </div>
+      </div>
+      <div id="blocks" class="blocks"></div>
+      <p class="hint">Tip: a repeat group runs its inner segments N times. Add a single final segment to close the gap to your target distance.</p>
+    </section>
+
+    <section class="card final-card" id="final-card">
+      <h2>Final segment (auto)</h2>
+      <p class="final-info">
+        Remaining to target: <strong id="remaining-distance">0 m</strong>
+      </p>
+      <div class="segment-row final-row">
+        <div class="field">
+          <label>Distance</label>
+          <div class="readonly-dist" id="final-distance-label">0.000 km</div>
+        </div>
+        <div class="field pace-field">
+          <label>Pace / km</label>
+          <div class="pace-inputs">
+            <input type="number" id="final-pace-min" inputmode="numeric" min="0" max="59" placeholder="4" />
+            <span class="sep">'</span>
+            <input type="number" id="final-pace-sec" inputmode="numeric" min="0" max="59" placeholder="20" />
+            <span class="sep">"</span>
+          </div>
+        </div>
+      </div>
+      <p class="hint" id="final-hint"></p>
+    </section>
+
+    <section class="card summary">
+      <h2>Summary</h2>
+      <div class="summary-grid">
+        <div>
+          <span class="label">Distance</span>
+          <strong id="total-distance">0.000 km</strong>
+        </div>
+        <div>
+          <span class="label">Total time</span>
+          <strong id="total-time">00:00:00</strong>
+        </div>
+        <div>
+          <span class="label">Avg pace</span>
+          <strong id="avg-pace">—</strong>
+        </div>
+        <div>
+          <span class="label">Target</span>
+          <strong id="target-label">42.195 km</strong>
+        </div>
+      </div>
+    </section>
+
+    <section class="card actions">
+      <button type="button" class="btn btn-danger" id="reset-btn">Reset plan</button>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <p>Data is saved in your browser only. <span class="mono">v1.0</span></p>
+  </footer>
+
+  <template id="segment-template">
+    <div class="segment-row" data-kind="segment">
+      <div class="field">
+        <label>Distance (km)</label>
+        <input type="number" class="seg-distance" inputmode="decimal" min="0" step="0.001" placeholder="2" />
+      </div>
+      <div class="field pace-field">
+        <label>Pace / km</label>
+        <div class="pace-inputs">
+          <input type="number" class="seg-min" inputmode="numeric" min="0" max="59" placeholder="4" />
+          <span class="sep">'</span>
+          <input type="number" class="seg-sec" inputmode="numeric" min="0" max="59" placeholder="25" />
+          <span class="sep">"</span>
+        </div>
+      </div>
+      <button type="button" class="btn-icon seg-del" aria-label="Delete segment">✕</button>
+    </div>
+  </template>
+
+  <template id="group-template">
+    <div class="group-block" data-kind="group">
+      <div class="group-head">
+        <label class="repeat-label">
+          Repeat
+          <input type="number" class="group-repeats" inputmode="numeric" min="1" step="1" value="10" />
+          ×
+        </label>
+        <button type="button" class="btn-icon group-del" aria-label="Delete group">✕</button>
+      </div>
+      <div class="group-segments"></div>
+      <button type="button" class="btn btn-ghost btn-small group-add-seg">+ Segment in group</button>
+    </div>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>
