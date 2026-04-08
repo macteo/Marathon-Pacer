@@ -174,6 +174,22 @@
   const segTpl = $("#segment-template");
   const groupTpl = $("#group-template");
 
+  // Clamp into [min, max]; if the user typed something out of range, also
+  // overwrite the input element so they immediately see the corrected
+  // value (e.g. typing "99" in seconds reverts to "59").
+  function clampInputValue(input, value, min, max) {
+    if (!isFinite(value)) return min;
+    if (value > max) {
+      input.value = String(max);
+      return max;
+    }
+    if (value < min) {
+      input.value = String(min);
+      return min;
+    }
+    return value;
+  }
+
   function renderSegmentRow(seg, onDelete) {
     const node = segTpl.content.firstElementChild.cloneNode(true);
     const dist = $(".seg-distance", node);
@@ -192,11 +208,11 @@
       recalc();
     });
     mi.addEventListener("input", () => {
-      seg.paceMin = clampNum(parseNum(mi.value), 0, 59);
+      seg.paceMin = clampInputValue(mi, parseNum(mi.value), 0, 59);
       recalc();
     });
     se.addEventListener("input", () => {
-      seg.paceSec = clampNum(parseNum(se.value), 0, 59);
+      seg.paceSec = clampInputValue(se, parseNum(se.value), 0, 59);
       recalc();
     });
     del.addEventListener("click", onDelete);
@@ -341,132 +357,188 @@
     return km.toFixed(2);
   }
 
+  // Theme-aware color palette for the chart. Reading from CSS vars would
+  // require getComputedStyle on every render — these constants are good
+  // enough and guarantee the chart is visible regardless of CSS state.
+  function chartColors() {
+    const dark =
+      window.matchMedia &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches;
+    return {
+      grid: dark ? "#243049" : "#e5e7eb",
+      label: dark ? "#9ca3af" : "#6b7280",
+      mainLine: "#0b6efd",
+      mainFill: "rgba(11, 110, 253, 0.28)",
+      finalLine: "#f59e0b",
+      finalFill: "rgba(245, 158, 11, 0.32)",
+    };
+  }
+
+  function svgEl(name, attrs) {
+    const el = document.createElementNS(SVG_NS, name);
+    for (const k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
   function renderChart() {
     const svg = $("#pace-chart");
-    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    if (!svg) return;
+    try {
+      while (svg.firstChild) svg.removeChild(svg.firstChild);
 
-    const W = 600;
-    const H = 280;
-    const padL = 56;
-    const padR = 14;
-    const padT = 14;
-    const padB = 36;
-    const innerW = W - padL - padR;
-    const innerH = H - padT - padB;
+      const W = 600;
+      const H = 280;
+      const padL = 56;
+      const padR = 14;
+      const padT = 14;
+      const padB = 36;
+      const innerW = W - padL - padR;
+      const innerH = H - padT - padB;
+      const colors = chartColors();
 
-    const data = flattenSegmentsForChart();
-    if (data.length === 0) {
-      const t = document.createElementNS(SVG_NS, "text");
-      t.setAttribute("x", String(W / 2));
-      t.setAttribute("y", String(H / 2));
-      t.setAttribute("text-anchor", "middle");
-      t.setAttribute("class", "empty-text");
-      t.textContent = "Add a segment to see your pace chart.";
-      svg.appendChild(t);
-      return;
+      const data = flattenSegmentsForChart();
+      if (data.length === 0) {
+        svg.appendChild(
+          Object.assign(
+            svgEl("text", {
+              x: String(W / 2),
+              y: String(H / 2),
+              "text-anchor": "middle",
+              "font-size": "14",
+              "font-family":
+                "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+              fill: colors.label,
+            }),
+            { textContent: "Add a segment to see your pace chart." }
+          )
+        );
+        return;
+      }
+
+      const totalKm = data.reduce((s, e) => s + parseNum(e.seg.distance), 0);
+      const paces = data.map((e) => paceToSeconds(e.seg.paceMin, e.seg.paceSec));
+      const rawMin = Math.min.apply(null, paces);
+      const rawMax = Math.max.apply(null, paces);
+      // Pad the y range so flat plans still look reasonable.
+      const span = Math.max(30, rawMax - rawMin);
+      const yMin = Math.max(0, rawMin - span * 0.25);
+      const yMax = rawMax + span * 0.25;
+
+      const xScale = (km) => padL + (km / totalKm) * innerW;
+      // Y axis: lower pace (faster) on TOP, slower at BOTTOM — the same
+      // way race split tables are conventionally read.
+      const yScale = (sec) => padT + ((sec - yMin) / (yMax - yMin)) * innerH;
+      const baseY = padT + innerH;
+
+      // ---- Grid + Y axis labels ----
+      const yTicks = 4;
+      for (let i = 0; i <= yTicks; i++) {
+        const v = yMin + ((yMax - yMin) * i) / yTicks;
+        const y = yScale(v);
+        svg.appendChild(
+          svgEl("line", {
+            x1: String(padL),
+            x2: String(W - padR),
+            y1: String(y),
+            y2: String(y),
+            stroke: colors.grid,
+            "stroke-width": "1",
+            "stroke-dasharray": "3 4",
+          })
+        );
+        const lbl = svgEl("text", {
+          x: String(padL - 8),
+          y: String(y + 4),
+          "text-anchor": "end",
+          "font-size": "12",
+          "font-family": "ui-monospace, SFMono-Regular, Menlo, monospace",
+          fill: colors.label,
+        });
+        lbl.textContent = fmtPaceShort(v);
+        svg.appendChild(lbl);
+      }
+
+      // ---- Build the stepped path for the area + line ----
+      // We render the main (non-final) segments and the final segment as
+      // separate shapes so the final one can be highlighted.
+      const points = []; // {x, y, isFinal}
+      let cumKm = 0;
+      for (const entry of data) {
+        const d = parseNum(entry.seg.distance);
+        const p = paceToSeconds(entry.seg.paceMin, entry.seg.paceSec);
+        const x1 = xScale(cumKm);
+        const x2 = xScale(cumKm + d);
+        const y = yScale(p);
+        points.push({ x: x1, y, isFinal: entry.isFinal });
+        points.push({ x: x2, y, isFinal: entry.isFinal });
+        cumKm += d;
+      }
+
+      const finalStartIdx = points.findIndex((p) => p.isFinal);
+      const mainPoints =
+        finalStartIdx === -1 ? points : points.slice(0, finalStartIdx);
+      const finalPoints =
+        finalStartIdx === -1 ? [] : points.slice(finalStartIdx);
+
+      function buildArea(pts, fill, stroke) {
+        if (pts.length === 0) return;
+        let aD = `M ${pts[0].x} ${baseY} L ${pts[0].x} ${pts[0].y}`;
+        for (let i = 1; i < pts.length; i++) aD += ` L ${pts[i].x} ${pts[i].y}`;
+        aD += ` L ${pts[pts.length - 1].x} ${baseY} Z`;
+        svg.appendChild(
+          svgEl("path", {
+            d: aD,
+            fill: fill,
+            stroke: "none",
+          })
+        );
+        let lD = `M ${pts[0].x} ${pts[0].y}`;
+        for (let i = 1; i < pts.length; i++) lD += ` L ${pts[i].x} ${pts[i].y}`;
+        svg.appendChild(
+          svgEl("path", {
+            d: lD,
+            fill: "none",
+            stroke: stroke,
+            "stroke-width": "2.5",
+            "stroke-linejoin": "round",
+            "stroke-linecap": "round",
+          })
+        );
+      }
+
+      buildArea(mainPoints, colors.mainFill, colors.mainLine);
+      buildArea(finalPoints, colors.finalFill, colors.finalLine);
+
+      // ---- X axis labels (5 ticks) ----
+      const xTicks = 5;
+      for (let i = 0; i <= xTicks; i++) {
+        const km = (totalKm * i) / xTicks;
+        const x = xScale(km);
+        const lbl = svgEl("text", {
+          x: String(x),
+          y: String(H - 18),
+          "text-anchor": "middle",
+          "font-size": "12",
+          "font-family": "ui-monospace, SFMono-Regular, Menlo, monospace",
+          fill: colors.label,
+        });
+        lbl.textContent = fmtKmShort(km);
+        svg.appendChild(lbl);
+      }
+      const unit = svgEl("text", {
+        x: String(padL + innerW / 2),
+        y: String(H - 4),
+        "text-anchor": "middle",
+        "font-size": "11",
+        "font-family":
+          "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+        fill: colors.label,
+      });
+      unit.textContent = "km";
+      svg.appendChild(unit);
+    } catch (err) {
+      console.error("renderChart failed:", err);
     }
-
-    const totalKm = data.reduce((s, e) => s + parseNum(e.seg.distance), 0);
-    const paces = data.map((e) => paceToSeconds(e.seg.paceMin, e.seg.paceSec));
-    const rawMin = Math.min(...paces);
-    const rawMax = Math.max(...paces);
-    // Pad the y range so flat plans still look reasonable.
-    const span = Math.max(30, rawMax - rawMin);
-    const yMin = Math.max(0, rawMin - span * 0.25);
-    const yMax = rawMax + span * 0.25;
-
-    const xScale = (km) => padL + (km / totalKm) * innerW;
-    // Y axis: lower pace value (faster) on TOP, slower at BOTTOM — the same
-    // way race split tables are conventionally read.
-    const yScale = (sec) => padT + ((sec - yMin) / (yMax - yMin)) * innerH;
-    const baseY = padT + innerH;
-
-    // ---- Grid + Y axis labels ----
-    const yTicks = 4;
-    for (let i = 0; i <= yTicks; i++) {
-      const v = yMin + ((yMax - yMin) * i) / yTicks;
-      const y = yScale(v);
-      const line = document.createElementNS(SVG_NS, "line");
-      line.setAttribute("x1", String(padL));
-      line.setAttribute("x2", String(W - padR));
-      line.setAttribute("y1", String(y));
-      line.setAttribute("y2", String(y));
-      line.setAttribute("class", "grid-line");
-      svg.appendChild(line);
-
-      const lbl = document.createElementNS(SVG_NS, "text");
-      lbl.setAttribute("x", String(padL - 8));
-      lbl.setAttribute("y", String(y + 4));
-      lbl.setAttribute("text-anchor", "end");
-      lbl.setAttribute("class", "axis-label");
-      lbl.textContent = fmtPaceShort(v);
-      svg.appendChild(lbl);
-    }
-
-    // ---- Build the stepped path for the area + line ----
-    // We render the main (non-final) segments and the final segment as
-    // separate shapes so the final one can be highlighted in the accent color.
-    const points = []; // {x, y, isFinal}
-    let cumKm = 0;
-    for (const entry of data) {
-      const d = parseNum(entry.seg.distance);
-      const p = paceToSeconds(entry.seg.paceMin, entry.seg.paceSec);
-      const x1 = xScale(cumKm);
-      const x2 = xScale(cumKm + d);
-      const y = yScale(p);
-      points.push({ x: x1, y, isFinal: entry.isFinal });
-      points.push({ x: x2, y, isFinal: entry.isFinal });
-      cumKm += d;
-    }
-
-    // Find where the final-segment block starts (first isFinal point).
-    const finalStartIdx = points.findIndex((p) => p.isFinal);
-    const mainPoints = finalStartIdx === -1 ? points : points.slice(0, finalStartIdx);
-    const finalPoints = finalStartIdx === -1 ? [] : points.slice(finalStartIdx);
-
-    function buildArea(pts, fillClass, lineClass) {
-      if (pts.length === 0) return;
-      // Filled area (closed to baseline)
-      const area = document.createElementNS(SVG_NS, "path");
-      let aD = `M ${pts[0].x} ${baseY} L ${pts[0].x} ${pts[0].y}`;
-      for (let i = 1; i < pts.length; i++) aD += ` L ${pts[i].x} ${pts[i].y}`;
-      aD += ` L ${pts[pts.length - 1].x} ${baseY} Z`;
-      area.setAttribute("d", aD);
-      area.setAttribute("class", fillClass);
-      svg.appendChild(area);
-
-      // Top line on its own so it has a crisp stroke
-      const line = document.createElementNS(SVG_NS, "path");
-      let lD = `M ${pts[0].x} ${pts[0].y}`;
-      for (let i = 1; i < pts.length; i++) lD += ` L ${pts[i].x} ${pts[i].y}`;
-      line.setAttribute("d", lD);
-      line.setAttribute("class", lineClass);
-      svg.appendChild(line);
-    }
-
-    buildArea(mainPoints, "area-fill", "area-line");
-    buildArea(finalPoints, "final-fill", "final-line");
-
-    // ---- X axis labels (5 ticks) ----
-    const xTicks = 5;
-    for (let i = 0; i <= xTicks; i++) {
-      const km = (totalKm * i) / xTicks;
-      const x = xScale(km);
-      const lbl = document.createElementNS(SVG_NS, "text");
-      lbl.setAttribute("x", String(x));
-      lbl.setAttribute("y", String(H - 18));
-      lbl.setAttribute("text-anchor", "middle");
-      lbl.setAttribute("class", "axis-label");
-      lbl.textContent = fmtKmShort(km);
-      svg.appendChild(lbl);
-    }
-    const unit = document.createElementNS(SVG_NS, "text");
-    unit.setAttribute("x", String(padL + innerW / 2));
-    unit.setAttribute("y", String(H - 4));
-    unit.setAttribute("text-anchor", "middle");
-    unit.setAttribute("class", "axis-label");
-    unit.textContent = "km";
-    svg.appendChild(unit);
   }
 
   // Recompute totals and persist without rebuilding inputs (so the
@@ -526,11 +598,11 @@
   const finalSec = $("#final-pace-sec");
 
   finalMin.addEventListener("input", () => {
-    state.finalPaceMin = clampNum(parseNum(finalMin.value), 0, 59);
+    state.finalPaceMin = clampInputValue(finalMin, parseNum(finalMin.value), 0, 59);
     recalc();
   });
   finalSec.addEventListener("input", () => {
-    state.finalPaceSec = clampNum(parseNum(finalSec.value), 0, 59);
+    state.finalPaceSec = clampInputValue(finalSec, parseNum(finalSec.value), 0, 59);
     recalc();
   });
 
