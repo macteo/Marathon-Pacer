@@ -163,7 +163,7 @@
   const segTpl = $("#segment-template");
   const groupTpl = $("#group-template");
 
-  function renderSegmentRow(seg, onChange, onDelete) {
+  function renderSegmentRow(seg, onDelete) {
     const node = segTpl.content.firstElementChild.cloneNode(true);
     const dist = $(".seg-distance", node);
     const mi = $(".seg-min", node);
@@ -176,15 +176,15 @@
 
     dist.addEventListener("input", () => {
       seg.distance = parseNum(dist.value);
-      onChange();
+      recalc();
     });
     mi.addEventListener("input", () => {
       seg.paceMin = clampNum(parseNum(mi.value), 0, 59);
-      onChange();
+      recalc();
     });
     se.addEventListener("input", () => {
       seg.paceSec = clampNum(parseNum(se.value), 0, 59);
-      onChange();
+      recalc();
     });
     del.addEventListener("click", onDelete);
 
@@ -204,14 +204,10 @@
 
     for (const block of state.blocks) {
       if (block.type === "segment") {
-        const row = renderSegmentRow(
-          block.segment,
-          update,
-          () => {
-            deleteBlock(block.id);
-            update();
-          }
-        );
+        const row = renderSegmentRow(block.segment, () => {
+          deleteBlock(block.id);
+          update();
+        });
         blocksEl.appendChild(row);
       } else {
         const node = groupTpl.content.firstElementChild.cloneNode(true);
@@ -223,26 +219,28 @@
         repeatsInput.value = block.repeats;
         repeatsInput.addEventListener("input", () => {
           block.repeats = Math.max(1, Math.floor(parseNum(repeatsInput.value, 1)));
-          update();
+          recalc();
         });
         delBtn.addEventListener("click", () => {
           deleteBlock(block.id);
           update();
         });
         addBtn.addEventListener("click", () => {
-          block.segments.push(makeSegment());
-          update();
+          const newSeg = makeSegment();
+          block.segments.push(newSeg);
+          const row = renderSegmentRow(newSeg, () => {
+            block.segments = block.segments.filter((s) => s.id !== newSeg.id);
+            update();
+          });
+          segWrap.appendChild(row);
+          recalc();
         });
 
         for (const seg of block.segments) {
-          const row = renderSegmentRow(
-            seg,
-            update,
-            () => {
-              block.segments = block.segments.filter((s) => s.id !== seg.id);
-              update();
-            }
-          );
+          const row = renderSegmentRow(seg, () => {
+            block.segments = block.segments.filter((s) => s.id !== seg.id);
+            update();
+          });
           segWrap.appendChild(row);
         }
 
@@ -279,10 +277,18 @@
     $("#target-label").textContent = formatDistance(state.target);
   }
 
-  function update() {
-    renderBlocks();
+  // Recompute totals and persist without rebuilding inputs (so the
+  // on-screen keyboard keeps focus while the user is typing).
+  function recalc() {
     renderFinalAndSummary();
     save();
+  }
+
+  // Full re-render: only call when the structure of blocks changes
+  // (add/remove block or segment), never on plain input events.
+  function update() {
+    renderBlocks();
+    recalc();
   }
 
   // ----- Target controls -----
@@ -312,11 +318,11 @@
       customWrap.hidden = true;
       state.target = Number(presetSel.value);
     }
-    update();
+    recalc();
   });
   customInput.addEventListener("input", () => {
     state.target = Math.max(0, parseNum(customInput.value, 0));
-    update();
+    recalc();
   });
 
   // ----- Final pace controls -----
@@ -325,11 +331,11 @@
 
   finalMin.addEventListener("input", () => {
     state.finalPaceMin = clampNum(parseNum(finalMin.value), 0, 59);
-    update();
+    recalc();
   });
   finalSec.addEventListener("input", () => {
     state.finalPaceSec = clampNum(parseNum(finalSec.value), 0, 59);
-    update();
+    recalc();
   });
 
   // ----- Top-level actions -----
