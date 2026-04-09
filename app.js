@@ -48,13 +48,23 @@
     return `${km.toFixed(3)} km`;
   };
 
+  // Numeric-only distance (no unit), for value boxes that already show
+  // "km" as an inline label on the left.
+  const formatDistanceBare = (km) => {
+    if (!isFinite(km) || km <= 0) return "0";
+    return km.toFixed(3);
+  };
+
   const formatHMS = (seconds) => {
     if (!isFinite(seconds) || seconds < 0) seconds = 0;
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
     const s = Math.round(seconds % 60);
     const pad = (n) => String(n).padStart(2, "0");
-    return `${pad(h)}:${pad(m)}:${pad(s)}`;
+    // Drop the hour field entirely when it's zero, and never pad the
+    // leading hour digit. "03:12:51" → "3:12:51", "00:09:31" → "9:31".
+    if (h > 0) return `${h}:${pad(m)}:${pad(s)}`;
+    return `${pad(m)}:${pad(s)}`;
   };
 
   const formatPace = (secPerKm) => {
@@ -349,7 +359,7 @@
     const r = computeFinal();
 
     $("#remaining-distance").textContent = formatDistance(r.remaining);
-    $("#final-distance-label").textContent = formatDistance(r.remaining);
+    $("#final-distance-label").textContent = formatDistanceBare(r.remaining);
 
     const finalHint = $("#final-hint");
     if (r.remaining <= 0.0005) {
@@ -691,6 +701,7 @@
   const presetSel = $("#target-preset");
   const customWrap = $("#custom-target-wrap");
   const customInput = $("#target-custom");
+  const targetValueDisplay = $("#target-value-display");
 
   function syncTargetInputs() {
     const presetValues = ["5", "10", "15", "21.0975", "42.195"];
@@ -698,9 +709,12 @@
     if (match) {
       presetSel.value = match;
       customWrap.hidden = true;
+      targetValueDisplay.hidden = false;
+      targetValueDisplay.textContent = formatDistance(state.target);
     } else {
       presetSel.value = "custom";
       customWrap.hidden = false;
+      targetValueDisplay.hidden = true;
       customInput.value = state.target || "";
     }
   }
@@ -708,6 +722,7 @@
   presetSel.addEventListener("change", () => {
     if (presetSel.value === "custom") {
       customWrap.hidden = false;
+      targetValueDisplay.hidden = true;
       // Pre-fill custom box with the current target so the user has a real
       // value to edit instead of an empty field.
       if (!customInput.value) customInput.value = String(state.target);
@@ -715,7 +730,9 @@
       state.target = parseNum(customInput.value, state.target);
     } else {
       customWrap.hidden = true;
+      targetValueDisplay.hidden = false;
       state.target = Number(presetSel.value);
+      targetValueDisplay.textContent = formatDistance(state.target);
     }
     recalc();
   });

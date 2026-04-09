@@ -107,11 +107,11 @@ main {
   display: flex;
   gap: 10px;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 .target-row select {
-  flex: 1 1 auto;
-  min-width: 140px;
+  flex: 1 1 0;
+  min-width: 0;
   height: var(--tap);
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -120,26 +120,39 @@ main {
   padding: 0 12px;
   font-size: 1rem;
 }
+.target-value {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+/* The default [hidden] display:none is overridden by our .custom-target
+   display:flex — make the hide explicit so the box really disappears. */
+.target-value[hidden],
+.custom-target[hidden] {
+  display: none !important;
+}
 .custom-target {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
 }
 .custom-target span {
   color: var(--muted);
   font-size: 0.9rem;
 }
 .custom-target input {
-  flex: 1;
+  width: 110px;
   height: var(--tap);
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--card);
   color: var(--text);
-  padding: 0 12px;
+  padding: 0 10px;
   font-size: 1rem;
-  width: 100%;
+  text-align: right;
 }
 
 .blocks {
@@ -150,9 +163,9 @@ main {
 
 .segment-row {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 6px;
-  padding: 8px 6px;
+  padding: 6px 4px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -160,23 +173,25 @@ main {
 .segment-row.is-dragging {
   opacity: 0.4;
 }
+/* Labels now sit inline to the LEFT of their value box. */
 .segment-row .field {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
   flex: 1 1 0;
   min-width: 0;
 }
 .segment-row label {
+  flex: 0 0 auto;
   font-size: 0.68rem;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .segment-row input[type="text"] {
+  flex: 1 1 0;
   width: 100%;
   height: var(--tap);
   border-radius: 10px;
@@ -187,9 +202,12 @@ main {
   font-size: 1rem;
   min-width: 0;
 }
+.segment-row .seg-distance {
+  text-align: right;
+}
 
 .pace-field {
-  flex: 1.3 1 0;
+  flex: 1.4 1 0;
 }
 .pace-inputs {
   display: flex;
@@ -235,7 +253,6 @@ main {
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
-  align-self: flex-end;
 }
 .drag-handle:active,
 .drag-handle.active {
@@ -243,7 +260,8 @@ main {
   color: var(--primary);
 }
 
-/* Round delete button — distinct from the text boxes */
+/* Round delete button — distinct from the text boxes and painted red
+   so it clearly reads as a destructive action. */
 .row-del {
   flex: 0 0 auto;
   width: 30px;
@@ -251,19 +269,17 @@ main {
   border-radius: 50%;
   border: none;
   background: transparent;
-  color: var(--muted);
+  color: var(--danger);
   cursor: pointer;
   padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  align-self: flex-end;
-  margin-bottom: 7px;
+  align-self: center;
 }
 .row-del:hover,
 .row-del:active {
-  color: var(--danger);
-  background: rgba(220, 38, 38, 0.12);
+  background: rgba(220, 38, 38, 0.15);
 }
 
 .btn {
@@ -306,6 +322,7 @@ main {
 }
 
 .group-block {
+  position: relative;
   border: 1px dashed rgba(11, 110, 253, 0.45);
   background: rgba(11, 110, 253, 0.04);
   border-radius: 12px;
@@ -319,15 +336,21 @@ main {
   align-items: center;
   gap: 8px;
   margin-bottom: 10px;
+  padding-right: 36px; /* leave room for the absolute-positioned × */
 }
 .group-head .drag-handle {
   align-self: center;
   height: 32px;
 }
-.group-head .row-del {
-  align-self: center;
-  margin-bottom: 0;
-  margin-left: auto;
+/* Group-level delete sits at the top-right corner of the block, not
+   inline with the Repeat row, so the repeat label and the × aren't
+   visually confused. */
+.group-head .row-del.group-del {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  margin: 0;
+  align-self: auto;
 }
 .repeat-label {
   display: flex;
@@ -372,14 +395,18 @@ main {
   color: var(--accent);
 }
 .readonly-dist {
+  flex: 1 1 0;
   height: var(--tap);
   display: flex;
   align-items: center;
-  padding: 0 12px;
+  justify-content: flex-end;
+  padding: 0 10px;
   border-radius: 10px;
   background: var(--card);
   border: 1px solid var(--border);
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
 }
 .final-row .drag-handle,
 .final-row .row-del {
@@ -392,26 +419,41 @@ main {
 .summary-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 8px;
 }
 .summary-grid > div {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
   padding: 10px 12px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 10px;
+  min-width: 0;
 }
 .summary-grid .label {
-  font-size: 0.72rem;
+  flex: 0 0 auto;
+  font-size: 0.64rem;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 .summary-grid strong {
-  font-size: 1.1rem;
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 1rem;
   font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 380px) {
+  .summary-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .chart-card .chart-wrap {
@@ -513,7 +555,13 @@ main {
 @media (max-width: 420px) {
   .segment-row {
     gap: 4px;
-    padding: 6px 4px;
+    padding: 6px 2px;
+  }
+  .segment-row .field {
+    gap: 4px;
+  }
+  .segment-row label {
+    font-size: 0.62rem;
   }
   .segment-row input[type="text"] {
     padding: 0 8px;
@@ -524,6 +572,10 @@ main {
   }
   .drag-handle {
     width: 16px;
+  }
+  .row-del {
+    width: 26px;
+    height: 26px;
   }
   .app-header h1 {
     font-size: 1.4rem;
