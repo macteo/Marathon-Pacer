@@ -15,13 +15,13 @@
   const DEFAULT_PACE_MIN = 5;
   const DEFAULT_PACE_SEC = 0;
 
-  // Selectable ranges for the dropdowns. Pace minutes covers from elite
-  // running (~2'/km) up to brisk walking (~15'/km). Repeats covers the
+  // Selectable ranges for the dropdowns. Pace minutes covers elite
+  // running (2'/km) up to easy jogging (8'/km). Repeats covers the
   // typical range for interval workouts.
   const PACE_MIN_MIN = 2;
-  const PACE_MIN_MAX = 15;
+  const PACE_MIN_MAX = 8;
   const REPEATS_MIN = 1;
-  const REPEATS_MAX = 30;
+  const REPEATS_MAX = 15;
 
   function populateOptions(selectEl, min, max, current) {
     while (selectEl.firstChild) selectEl.removeChild(selectEl.firstChild);
