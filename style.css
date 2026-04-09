@@ -177,7 +177,7 @@ main {
 .segment-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 12px;
   padding: 6px 4px;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -255,8 +255,10 @@ main {
   background: transparent !important;
   height: 100% !important;
   padding: 0 !important;
-  text-align: center;
-  text-align-last: center;
+  /* Hug the ' and " separators: minutes right-align against the
+     apostrophe, seconds right-align against the quote. */
+  text-align: right;
+  text-align-last: right;
   width: 100%;
   min-width: 0;
   flex: 1 1 0;
@@ -616,7 +618,7 @@ main {
 
 @media (max-width: 420px) {
   .segment-row {
-    gap: 4px;
+    gap: 8px;
     padding: 6px 2px;
   }
   .segment-row .field {
