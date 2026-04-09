@@ -36,7 +36,9 @@
 
   const parseNum = (v, fallback = 0) => {
     if (v === "" || v === null || v === undefined) return fallback;
-    const n = Number(v);
+    // Accept European decimal separator: "4,25" → 4.25.
+    const s = typeof v === "string" ? v.replace(",", ".") : v;
+    const n = Number(s);
     return isNaN(n) ? fallback : n;
   };
 
@@ -220,6 +222,11 @@
     return node;
   }
 
+  function attachDragHandle(handleEl, blockId) {
+    if (!handleEl) return;
+    handleEl.addEventListener("pointerdown", (e) => startDrag(e, blockId));
+  }
+
   function renderBlocks() {
     blocksEl.innerHTML = "";
 
@@ -237,17 +244,24 @@
           deleteBlock(block.id);
           update();
         });
+        row.setAttribute("data-block-id", block.id);
+        attachDragHandle(row.querySelector(".drag-handle"), block.id);
         blocksEl.appendChild(row);
       } else {
         const node = groupTpl.content.firstElementChild.cloneNode(true);
+        node.setAttribute("data-block-id", block.id);
         const repeatsInput = $(".group-repeats", node);
         const segWrap = $(".group-segments", node);
         const addBtn = $(".group-add-seg", node);
         const delBtn = $(".group-del", node);
 
-        repeatsInput.value = block.repeats;
+        repeatsInput.value = String(block.repeats);
         repeatsInput.addEventListener("input", () => {
-          block.repeats = Math.max(1, Math.floor(parseNum(repeatsInput.value, 1)));
+          const v = Math.max(1, Math.floor(parseNum(repeatsInput.value, 1)));
+          block.repeats = v;
+          // Mirror the clamped value back into the input so the user
+          // can't leave negative / zero / non-numeric garbage in there.
+          if (String(v) !== repeatsInput.value) repeatsInput.value = String(v);
           recalc();
         });
         delBtn.addEventListener("click", () => {
@@ -273,9 +287,62 @@
           segWrap.appendChild(row);
         }
 
+        // Drag the whole group by its head handle.
+        attachDragHandle(node.querySelector(".group-head .drag-handle"), block.id);
         blocksEl.appendChild(node);
       }
     }
+  }
+
+  // ----- Drag & drop reordering of top-level blocks -----
+  let dragState = null;
+
+  function startDrag(e, blockId) {
+    // Only the primary button / touch initiates a drag.
+    if (e.button !== undefined && e.button !== 0) return;
+    e.preventDefault();
+    dragState = { blockId };
+    const el = blocksEl.querySelector(`[data-block-id="${blockId}"]`);
+    if (el) el.classList.add("is-dragging");
+    document.addEventListener("pointermove", onDragMove);
+    document.addEventListener("pointerup", onDragEnd);
+    document.addEventListener("pointercancel", onDragEnd);
+  }
+
+  function onDragMove(e) {
+    if (!dragState) return;
+    e.preventDefault();
+    const siblings = Array.from(blocksEl.querySelectorAll("[data-block-id]"));
+    let targetIdx = siblings.length;
+    for (let i = 0; i < siblings.length; i++) {
+      const rect = siblings[i].getBoundingClientRect();
+      if (e.clientY < rect.top + rect.height / 2) {
+        targetIdx = i;
+        break;
+      }
+    }
+    const currentIdx = state.blocks.findIndex((b) => b.id === dragState.blockId);
+    if (currentIdx < 0) return;
+    // Adjust because the dragged block is still in the array while we
+    // look for the insertion index.
+    if (currentIdx < targetIdx) targetIdx -= 1;
+    if (currentIdx === targetIdx) return;
+    const [moved] = state.blocks.splice(currentIdx, 1);
+    state.blocks.splice(targetIdx, 0, moved);
+    update();
+    // Full re-render wiped the class off the dragged element — re-apply.
+    const el = blocksEl.querySelector(`[data-block-id="${dragState.blockId}"]`);
+    if (el) el.classList.add("is-dragging");
+  }
+
+  function onDragEnd() {
+    if (!dragState) return;
+    const el = blocksEl.querySelector(`[data-block-id="${dragState.blockId}"]`);
+    if (el) el.classList.remove("is-dragging");
+    dragState = null;
+    document.removeEventListener("pointermove", onDragMove);
+    document.removeEventListener("pointerup", onDragEnd);
+    document.removeEventListener("pointercancel", onDragEnd);
   }
 
   function renderFinalAndSummary() {
@@ -367,12 +434,25 @@
     return {
       grid: dark ? "#243049" : "#e5e7eb",
       label: dark ? "#9ca3af" : "#6b7280",
-      mainLine: "#0b6efd",
-      mainFill: "rgba(11, 110, 253, 0.28)",
       finalLine: "#f59e0b",
-      finalFill: "rgba(245, 158, 11, 0.32)",
+      finalFill: "rgba(245, 158, 11, 0.35)",
+      avgLine: "#ef4444",
+      targetLine: dark ? "#cbd5e1" : "#475569",
     };
   }
+
+  // Distinct colors cycled per source segment so each segment (and each
+  // of its repetitions) gets a recognisable tint in the area chart.
+  const SEGMENT_PALETTE = [
+    { line: "#0b6efd", fill: "rgba(11, 110, 253, 0.32)" },
+    { line: "#10b981", fill: "rgba(16, 185, 129, 0.32)" },
+    { line: "#8b5cf6", fill: "rgba(139, 92, 246, 0.32)" },
+    { line: "#ec4899", fill: "rgba(236, 72, 153, 0.32)" },
+    { line: "#06b6d4", fill: "rgba(6, 182, 212, 0.32)" },
+    { line: "#f97316", fill: "rgba(249, 115, 22, 0.32)" },
+    { line: "#84cc16", fill: "rgba(132, 204, 22, 0.32)" },
+    { line: "#a855f7", fill: "rgba(168, 85, 247, 0.32)" },
+  ];
 
   function svgEl(name, attrs) {
     const el = document.createElementNS(SVG_NS, name);
@@ -458,56 +538,107 @@
         svg.appendChild(lbl);
       }
 
-      // ---- Build the stepped path for the area + line ----
-      // We render the main (non-final) segments and the final segment as
-      // separate shapes so the final one can be highlighted.
-      const points = []; // {x, y, isFinal}
+      // ---- Per-segment coloring ----
+      // Each distinct source segment gets its own color from the palette
+      // (so every repetition of the same segment looks alike). The auto
+      // final segment keeps its dedicated accent color.
+      const colorBySource = new Map();
+      let colorIdx = 0;
+      for (const entry of data) {
+        if (entry.isFinal) {
+          entry._color = { line: colors.finalLine, fill: colors.finalFill };
+          continue;
+        }
+        const sid = entry.seg.id || "anon";
+        if (!colorBySource.has(sid)) {
+          colorBySource.set(sid, SEGMENT_PALETTE[colorIdx % SEGMENT_PALETTE.length]);
+          colorIdx++;
+        }
+        entry._color = colorBySource.get(sid);
+      }
+
+      // ---- Draw each segment as its own filled rectangle + top line ----
       let cumKm = 0;
+      let totalSec = 0;
       for (const entry of data) {
         const d = parseNum(entry.seg.distance);
         const p = paceToSeconds(entry.seg.paceMin, entry.seg.paceSec);
         const x1 = xScale(cumKm);
         const x2 = xScale(cumKm + d);
         const y = yScale(p);
-        points.push({ x: x1, y, isFinal: entry.isFinal });
-        points.push({ x: x2, y, isFinal: entry.isFinal });
-        cumKm += d;
-      }
-
-      const finalStartIdx = points.findIndex((p) => p.isFinal);
-      const mainPoints =
-        finalStartIdx === -1 ? points : points.slice(0, finalStartIdx);
-      const finalPoints =
-        finalStartIdx === -1 ? [] : points.slice(finalStartIdx);
-
-      function buildArea(pts, fill, stroke) {
-        if (pts.length === 0) return;
-        let aD = `M ${pts[0].x} ${baseY} L ${pts[0].x} ${pts[0].y}`;
-        for (let i = 1; i < pts.length; i++) aD += ` L ${pts[i].x} ${pts[i].y}`;
-        aD += ` L ${pts[pts.length - 1].x} ${baseY} Z`;
         svg.appendChild(
           svgEl("path", {
-            d: aD,
-            fill: fill,
+            d: `M ${x1} ${baseY} L ${x1} ${y} L ${x2} ${y} L ${x2} ${baseY} Z`,
+            fill: entry._color.fill,
             stroke: "none",
           })
         );
-        let lD = `M ${pts[0].x} ${pts[0].y}`;
-        for (let i = 1; i < pts.length; i++) lD += ` L ${pts[i].x} ${pts[i].y}`;
         svg.appendChild(
           svgEl("path", {
-            d: lD,
+            d: `M ${x1} ${y} L ${x2} ${y}`,
             fill: "none",
-            stroke: stroke,
+            stroke: entry._color.line,
             "stroke-width": "2.5",
-            "stroke-linejoin": "round",
             "stroke-linecap": "round",
           })
         );
+        cumKm += d;
+        totalSec += d * p;
       }
 
-      buildArea(mainPoints, colors.mainFill, colors.mainLine);
-      buildArea(finalPoints, colors.finalFill, colors.finalLine);
+      // ---- Average pace dashed horizontal line ----
+      const avgPace = totalSec / totalKm;
+      if (isFinite(avgPace) && avgPace > 0) {
+        const ya = yScale(avgPace);
+        svg.appendChild(
+          svgEl("line", {
+            x1: String(padL),
+            x2: String(W - padR),
+            y1: String(ya),
+            y2: String(ya),
+            stroke: colors.avgLine,
+            "stroke-width": "1.8",
+            "stroke-dasharray": "6 4",
+          })
+        );
+        const lbl = svgEl("text", {
+          x: String(W - padR - 4),
+          y: String(ya - 5),
+          "text-anchor": "end",
+          "font-size": "11",
+          "font-family": "ui-monospace, SFMono-Regular, Menlo, monospace",
+          fill: colors.avgLine,
+        });
+        lbl.textContent = "avg " + fmtPaceShort(avgPace);
+        svg.appendChild(lbl);
+      }
+
+      // ---- Target distance dashed vertical line ----
+      if (state.target > 0) {
+        const targetKm = Math.min(state.target, totalKm);
+        const xt = xScale(targetKm);
+        svg.appendChild(
+          svgEl("line", {
+            x1: String(xt),
+            x2: String(xt),
+            y1: String(padT),
+            y2: String(baseY),
+            stroke: colors.targetLine,
+            "stroke-width": "1.8",
+            "stroke-dasharray": "4 4",
+          })
+        );
+        const lbl = svgEl("text", {
+          x: String(xt - 4),
+          y: String(padT + 12),
+          "text-anchor": "end",
+          "font-size": "11",
+          "font-family": "ui-monospace, SFMono-Regular, Menlo, monospace",
+          fill: colors.targetLine,
+        });
+        lbl.textContent = "target";
+        svg.appendChild(lbl);
+      }
 
       // ---- X axis labels (5 ticks) ----
       const xTicks = 5;
@@ -616,20 +747,152 @@
     update();
   });
   $("#reset-btn").addEventListener("click", () => {
-    if (!confirm("Reset the whole plan? This clears all segments and saved data.")) return;
+    if (!confirm("Reset the whole plan? This clears all segments (saved plans are kept).")) return;
     state = {
       target: 42.195,
       blocks: [],
-      finalPaceMin: null,
-      finalPaceSec: null,
+      finalPaceMin: DEFAULT_PACE_MIN,
+      finalPaceSec: DEFAULT_PACE_SEC,
     };
     try {
       localStorage.removeItem(STORAGE_KEY);
     } catch (e) {}
-    finalMin.value = "";
-    finalSec.value = "";
+    finalMin.value = String(state.finalPaceMin);
+    finalSec.value = String(state.finalPaceSec);
     syncTargetInputs();
     update();
+  });
+
+  // ----- Cursor-at-end on focus -----
+  // When a text value box receives focus, place the caret at the end so
+  // backspace clears the field without needing to move the caret first.
+  document.addEventListener("focusin", (e) => {
+    const el = e.target;
+    if (!el || el.tagName !== "INPUT") return;
+    if (el.type !== "text") return;
+    setTimeout(() => {
+      try {
+        const len = (el.value || "").length;
+        el.setSelectionRange(len, len);
+      } catch (err) {
+        /* some browsers still block setSelectionRange on certain inputs */
+      }
+    }, 0);
+  });
+
+  // ----- Saved plans (localStorage) -----
+  const PLANS_KEY = "marathon-pacer-plans-v1";
+
+  function loadPlans() {
+    try {
+      const raw = localStorage.getItem(PLANS_KEY);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function persistPlans(plans) {
+    try {
+      localStorage.setItem(PLANS_KEY, JSON.stringify(plans));
+    } catch (e) {
+      console.warn("Cannot persist plans:", e);
+    }
+  }
+
+  function snapshotPlan(name) {
+    return {
+      id: uid(),
+      name: name,
+      savedAt: Date.now(),
+      plan: {
+        target: state.target,
+        blocks: JSON.parse(JSON.stringify(state.blocks)),
+        finalPaceMin: state.finalPaceMin,
+        finalPaceSec: state.finalPaceSec,
+      },
+    };
+  }
+
+  function restorePlan(entry) {
+    if (!entry || !entry.plan) return;
+    state.target = entry.plan.target || 42.195;
+    state.blocks = Array.isArray(entry.plan.blocks)
+      ? JSON.parse(JSON.stringify(entry.plan.blocks))
+      : [];
+    state.finalPaceMin =
+      entry.plan.finalPaceMin != null ? entry.plan.finalPaceMin : DEFAULT_PACE_MIN;
+    state.finalPaceSec =
+      entry.plan.finalPaceSec != null ? entry.plan.finalPaceSec : DEFAULT_PACE_SEC;
+    finalMin.value = String(state.finalPaceMin);
+    finalSec.value = String(state.finalPaceSec);
+    syncTargetInputs();
+    update();
+  }
+
+  function renderPlans() {
+    const listEl = $("#plans-list");
+    if (!listEl) return;
+    listEl.innerHTML = "";
+    const plans = loadPlans();
+    if (plans.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty-plans";
+      empty.textContent = 'No saved plans yet. Tap "Save current…" to store one.';
+      listEl.appendChild(empty);
+      return;
+    }
+    // Most-recent first.
+    plans.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+    for (const p of plans) {
+      const row = document.createElement("div");
+      row.className = "plan-row";
+
+      const load = document.createElement("button");
+      load.type = "button";
+      load.className = "plan-load";
+      load.textContent = p.name;
+      const meta = document.createElement("span");
+      meta.className = "plan-meta";
+      if (p.plan && p.plan.target) meta.textContent = "  · " + p.plan.target + " km";
+      load.appendChild(meta);
+      load.addEventListener("click", () => {
+        if (confirm(`Load "${p.name}"? This replaces the current plan.`)) {
+          restorePlan(p);
+        }
+      });
+
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "row-del";
+      del.setAttribute("aria-label", "Delete saved plan");
+      del.style.marginBottom = "0";
+      del.innerHTML =
+        '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>';
+      del.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (!confirm(`Delete saved plan "${p.name}"?`)) return;
+        persistPlans(loadPlans().filter((x) => x.id !== p.id));
+        renderPlans();
+      });
+
+      row.appendChild(load);
+      row.appendChild(del);
+      listEl.appendChild(row);
+    }
+  }
+
+  $("#save-plan").addEventListener("click", () => {
+    const name = prompt("Name this plan:", "");
+    if (name == null) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const plans = loadPlans();
+    plans.push(snapshotPlan(trimmed));
+    persistPlans(plans);
+    renderPlans();
   });
 
   // ----- Init -----
@@ -641,5 +904,6 @@
   finalMin.value = String(state.finalPaceMin);
   finalSec.value = String(state.finalPaceSec);
   syncTargetInputs();
+  renderPlans();
   update();
 })();
