@@ -234,7 +234,24 @@
 
   function attachDragHandle(handleEl, blockId) {
     if (!handleEl) return;
-    handleEl.addEventListener("pointerdown", (e) => startDrag(e, blockId));
+    // iOS Safari: native touch events are the only reliable way to
+    // preventDefault() and stop the browser's scroll gesture recogniser
+    // from stealing a vertical drag. Pointer events + setPointerCapture
+    // don't cut it there — the scroll decision happens before capture.
+    handleEl.addEventListener(
+      "touchstart",
+      (e) => {
+        // Only single-finger drags.
+        if (e.touches && e.touches.length > 1) return;
+        startDrag(e, blockId, /*isTouch*/ true);
+      },
+      { passive: false }
+    );
+    // Desktop / mouse.
+    handleEl.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      startDrag(e, blockId, /*isTouch*/ false);
+    });
   }
 
   function renderBlocks() {
@@ -305,50 +322,67 @@
   }
 
   // ----- Drag & drop reordering of top-level blocks -----
+  //
+  // On iOS Safari the only reliable way to block the page scroll and
+  // keep the gesture flowing is:
+  //   1. Register touchstart on the handle with {passive: false} and
+  //      call preventDefault().
+  //   2. Register touchmove on document with {passive: false} INSIDE
+  //      the touchstart handler, then preventDefault in touchmove too.
+  //   3. Keep listening on document (not the handle) so re-renders
+  //      that destroy the handle mid-drag don't kill the gesture —
+  //      document survives forever.
+  // Pointer events / setPointerCapture are not used because iOS
+  // Safari's scroll recogniser can still steal capture on vertical
+  // motion before capture takes effect.
   let dragState = null;
 
-  function startDrag(e, blockId) {
-    // Only the primary button / touch initiates a drag.
-    if (e.button !== undefined && e.button !== 0) return;
-    e.preventDefault();
-    // Capture the pointer on the stable blocks container instead of the
-    // handle itself. The handle's DOM node is destroyed and recreated
-    // every time we re-render mid-drag; blocksEl survives the whole
-    // gesture, so pointer events keep flowing to it on iOS Safari (where
-    // losing capture causes the touch to be reinterpreted as a scroll).
-    try {
-      blocksEl.setPointerCapture(e.pointerId);
-    } catch (err) {
-      /* older browsers: fall back to document listeners */
-    }
-    // While dragging, prevent the container from scrolling under the
-    // finger. Restored in onDragEnd.
-    blocksEl.style.touchAction = "none";
+  function getClientY(e) {
+    if (e.touches && e.touches.length) return e.touches[0].clientY;
+    if (e.changedTouches && e.changedTouches.length) return e.changedTouches[0].clientY;
+    return e.clientY;
+  }
 
-    dragState = { blockId, pointerId: e.pointerId };
+  function startDrag(e, blockId, isTouch) {
+    e.preventDefault();
+    if (dragState) return;
+
+    dragState = { blockId, isTouch };
     const el = blocksEl.querySelector(`[data-block-id="${blockId}"]`);
     if (el) el.classList.add("is-dragging");
-    blocksEl.addEventListener("pointermove", onDragMove);
-    blocksEl.addEventListener("pointerup", onDragEnd);
-    blocksEl.addEventListener("pointercancel", onDragEnd);
+
+    if (isTouch) {
+      // {passive: false} is THE fix: without it, preventDefault() in
+      // touchmove is silently ignored on iOS and the page scrolls
+      // instead of the block moving.
+      document.addEventListener("touchmove", onDragMove, { passive: false });
+      document.addEventListener("touchend", onDragEnd);
+      document.addEventListener("touchcancel", onDragEnd);
+    } else {
+      document.addEventListener("mousemove", onDragMove);
+      document.addEventListener("mouseup", onDragEnd);
+    }
   }
 
   function onDragMove(e) {
-    if (!dragState || e.pointerId !== dragState.pointerId) return;
-    e.preventDefault();
+    if (!dragState) return;
+    // Must be called on every move or iOS resumes scrolling.
+    if (e.cancelable) e.preventDefault();
+    const y = getClientY(e);
+    if (y == null || !isFinite(y)) return;
     const siblings = Array.from(blocksEl.querySelectorAll("[data-block-id]"));
     let targetIdx = siblings.length;
     for (let i = 0; i < siblings.length; i++) {
       const rect = siblings[i].getBoundingClientRect();
-      if (e.clientY < rect.top + rect.height / 2) {
+      if (y < rect.top + rect.height / 2) {
         targetIdx = i;
         break;
       }
     }
     const currentIdx = state.blocks.findIndex((b) => b.id === dragState.blockId);
     if (currentIdx < 0) return;
-    // Adjust because the dragged block is still in the array while we
-    // look for the insertion index.
+    // The dragged block is still in the array while we look for the
+    // insertion index — adjust if it's moving down.
     if (currentIdx < targetIdx) targetIdx -= 1;
     if (currentIdx === targetIdx) return;
     const [moved] = state.blocks.splice(currentIdx, 1);
@@ -363,14 +397,15 @@
     if (!dragState) return;
     const el = blocksEl.querySelector(`[data-block-id="${dragState.blockId}"]`);
     if (el) el.classList.remove("is-dragging");
-    try {
-      blocksEl.releasePointerCapture(dragState.pointerId);
-    } catch (err) {}
-    blocksEl.style.touchAction = "";
+    if (dragState.isTouch) {
+      document.removeEventListener("touchmove", onDragMove, { passive: false });
+      document.removeEventListener("touchend", onDragEnd);
+      document.removeEventListener("touchcancel", onDragEnd);
+    } else {
+      document.removeEventListener("mousemove", onDragMove);
+      document.removeEventListener("mouseup", onDragEnd);
+    }
     dragState = null;
-    blocksEl.removeEventListener("pointermove", onDragMove);
-    blocksEl.removeEventListener("pointerup", onDragEnd);
-    blocksEl.removeEventListener("pointercancel", onDragEnd);
   }
 
   function renderFinalAndSummary() {
