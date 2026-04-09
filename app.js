@@ -832,6 +832,134 @@
     update();
   }
 
+  // Compute distance/time/avg-pace from a stored plan object (not from
+  // live state), so the saved-plan list can show a summary without
+  // touching the current working plan.
+  function flattenPlanSegments(plan) {
+    const out = [];
+    if (!plan) return out;
+    for (const block of plan.blocks || []) {
+      if (block.type === "segment" && block.segment) {
+        out.push({ seg: block.segment, isFinal: false });
+      } else if (block.type === "group") {
+        const reps = Math.max(1, Math.floor(parseNum(block.repeats, 1)));
+        for (let i = 0; i < reps; i++) {
+          for (const s of block.segments || []) {
+            out.push({ seg: s, isFinal: false });
+          }
+        }
+      }
+    }
+    let segKm = 0;
+    for (const e of out) segKm += parseNum(e.seg.distance);
+    const target = parseNum(plan.target, 0);
+    const remaining = Math.max(0, target - segKm);
+    if (remaining > 0.0005) {
+      out.push({
+        seg: {
+          distance: remaining,
+          paceMin: plan.finalPaceMin || 0,
+          paceSec: plan.finalPaceSec || 0,
+        },
+        isFinal: true,
+      });
+    }
+    return out.filter(
+      (e) =>
+        parseNum(e.seg.distance) > 0 &&
+        paceToSeconds(e.seg.paceMin, e.seg.paceSec) > 0
+    );
+  }
+
+  function computePlanStats(plan) {
+    const data = flattenPlanSegments(plan);
+    let distance = 0;
+    let seconds = 0;
+    for (const e of data) {
+      const d = parseNum(e.seg.distance);
+      const p = paceToSeconds(e.seg.paceMin, e.seg.paceSec);
+      distance += d;
+      seconds += d * p;
+    }
+    const avgPace = distance > 0 ? seconds / distance : 0;
+    return { distance, seconds, avgPace, data };
+  }
+
+  // Tiny inline stepped area chart for one plan row. Shares the palette
+  // with the main chart so the same segment reads the same color.
+  function renderPlanSparkline(data) {
+    const W = 96;
+    const H = 32;
+    const svg = svgEl("svg", {
+      viewBox: `0 0 ${W} ${H}`,
+      width: String(W),
+      height: String(H),
+      class: "plan-spark",
+      "aria-hidden": "true",
+    });
+    if (!data || data.length === 0) return svg;
+
+    const totalKm = data.reduce((s, e) => s + parseNum(e.seg.distance), 0);
+    if (totalKm <= 0) return svg;
+    const paces = data.map((e) => paceToSeconds(e.seg.paceMin, e.seg.paceSec));
+    const rawMin = Math.min.apply(null, paces);
+    const rawMax = Math.max.apply(null, paces);
+    const span = Math.max(10, rawMax - rawMin);
+    const yMin = Math.max(0, rawMin - span * 0.2);
+    const yMax = rawMax + span * 0.2;
+
+    const padX = 1;
+    const padY = 2;
+    const innerW = W - padX * 2;
+    const innerH = H - padY * 2;
+    const xScale = (km) => padX + (km / totalKm) * innerW;
+    const yScale = (sec) => padY + ((sec - yMin) / (yMax - yMin)) * innerH;
+    const baseY = padY + innerH;
+
+    const colorBySource = new Map();
+    let ci = 0;
+    const finalColor = { line: "#f59e0b", fill: "rgba(245, 158, 11, 0.4)" };
+    for (const entry of data) {
+      if (entry.isFinal) {
+        entry._color = finalColor;
+        continue;
+      }
+      const sid = (entry.seg && entry.seg.id) || "anon";
+      if (!colorBySource.has(sid)) {
+        colorBySource.set(sid, SEGMENT_PALETTE[ci % SEGMENT_PALETTE.length]);
+        ci++;
+      }
+      entry._color = colorBySource.get(sid);
+    }
+
+    let cumKm = 0;
+    for (const entry of data) {
+      const d = parseNum(entry.seg.distance);
+      const p = paceToSeconds(entry.seg.paceMin, entry.seg.paceSec);
+      const x1 = xScale(cumKm);
+      const x2 = xScale(cumKm + d);
+      const y = yScale(p);
+      svg.appendChild(
+        svgEl("path", {
+          d: `M ${x1} ${baseY} L ${x1} ${y} L ${x2} ${y} L ${x2} ${baseY} Z`,
+          fill: entry._color.fill,
+          stroke: "none",
+        })
+      );
+      svg.appendChild(
+        svgEl("path", {
+          d: `M ${x1} ${y} L ${x2} ${y}`,
+          fill: "none",
+          stroke: entry._color.line,
+          "stroke-width": "1.4",
+          "stroke-linecap": "round",
+        })
+      );
+      cumKm += d;
+    }
+    return svg;
+  }
+
   function renderPlans() {
     const listEl = $("#plans-list");
     if (!listEl) return;
@@ -853,11 +981,31 @@
       const load = document.createElement("button");
       load.type = "button";
       load.className = "plan-load";
-      load.textContent = p.name;
-      const meta = document.createElement("span");
+      load.setAttribute("aria-label", `Load plan ${p.name}`);
+
+      const info = document.createElement("div");
+      info.className = "plan-info";
+
+      const name = document.createElement("div");
+      name.className = "plan-name";
+      name.textContent = p.name;
+
+      const meta = document.createElement("div");
       meta.className = "plan-meta";
-      if (p.plan && p.plan.target) meta.textContent = "  · " + p.plan.target + " km";
-      load.appendChild(meta);
+      const stats = computePlanStats(p.plan || {});
+      const metaParts = [];
+      if (stats.avgPace > 0) {
+        metaParts.push(formatPace(stats.avgPace).replace("/km", ""));
+      }
+      if (stats.seconds > 0) metaParts.push(formatHMS(stats.seconds));
+      if (stats.distance > 0) metaParts.push(formatDistance(stats.distance));
+      meta.textContent = metaParts.join(" · ") || "empty plan";
+
+      info.appendChild(name);
+      info.appendChild(meta);
+      load.appendChild(info);
+      load.appendChild(renderPlanSparkline(stats.data));
+
       load.addEventListener("click", () => {
         if (confirm(`Load "${p.name}"? This replaces the current plan.`)) {
           restorePlan(p);
@@ -866,9 +1014,8 @@
 
       const del = document.createElement("button");
       del.type = "button";
-      del.className = "row-del";
+      del.className = "row-del plan-del";
       del.setAttribute("aria-label", "Delete saved plan");
-      del.style.marginBottom = "0";
       del.innerHTML =
         '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>';
       del.addEventListener("click", (e) => {
