@@ -311,16 +311,30 @@
     // Only the primary button / touch initiates a drag.
     if (e.button !== undefined && e.button !== 0) return;
     e.preventDefault();
-    dragState = { blockId };
+    // Capture the pointer on the stable blocks container instead of the
+    // handle itself. The handle's DOM node is destroyed and recreated
+    // every time we re-render mid-drag; blocksEl survives the whole
+    // gesture, so pointer events keep flowing to it on iOS Safari (where
+    // losing capture causes the touch to be reinterpreted as a scroll).
+    try {
+      blocksEl.setPointerCapture(e.pointerId);
+    } catch (err) {
+      /* older browsers: fall back to document listeners */
+    }
+    // While dragging, prevent the container from scrolling under the
+    // finger. Restored in onDragEnd.
+    blocksEl.style.touchAction = "none";
+
+    dragState = { blockId, pointerId: e.pointerId };
     const el = blocksEl.querySelector(`[data-block-id="${blockId}"]`);
     if (el) el.classList.add("is-dragging");
-    document.addEventListener("pointermove", onDragMove);
-    document.addEventListener("pointerup", onDragEnd);
-    document.addEventListener("pointercancel", onDragEnd);
+    blocksEl.addEventListener("pointermove", onDragMove);
+    blocksEl.addEventListener("pointerup", onDragEnd);
+    blocksEl.addEventListener("pointercancel", onDragEnd);
   }
 
   function onDragMove(e) {
-    if (!dragState) return;
+    if (!dragState || e.pointerId !== dragState.pointerId) return;
     e.preventDefault();
     const siblings = Array.from(blocksEl.querySelectorAll("[data-block-id]"));
     let targetIdx = siblings.length;
@@ -349,10 +363,14 @@
     if (!dragState) return;
     const el = blocksEl.querySelector(`[data-block-id="${dragState.blockId}"]`);
     if (el) el.classList.remove("is-dragging");
+    try {
+      blocksEl.releasePointerCapture(dragState.pointerId);
+    } catch (err) {}
+    blocksEl.style.touchAction = "";
     dragState = null;
-    document.removeEventListener("pointermove", onDragMove);
-    document.removeEventListener("pointerup", onDragEnd);
-    document.removeEventListener("pointercancel", onDragEnd);
+    blocksEl.removeEventListener("pointermove", onDragMove);
+    blocksEl.removeEventListener("pointerup", onDragEnd);
+    blocksEl.removeEventListener("pointercancel", onDragEnd);
   }
 
   function renderFinalAndSummary() {
