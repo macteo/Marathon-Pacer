@@ -60,7 +60,7 @@
         <div class="field pace-field">
           <label>Pace</label>
           <div class="pace-inputs">
-            <input type="text" id="final-pace-min" inputmode="numeric" maxlength="2" />
+            <select id="final-pace-min" aria-label="Final pace minutes"></select>
             <span class="sep">'</span>
             <input type="text" id="final-pace-sec" inputmode="numeric" maxlength="2" />
             <span class="sep">"</span>
@@ -136,7 +136,7 @@
       <div class="field pace-field">
         <label>Pace</label>
         <div class="pace-inputs">
-          <input type="text" class="seg-min" inputmode="numeric" maxlength="2" />
+          <select class="seg-min" aria-label="Pace minutes"></select>
           <span class="sep">'</span>
           <input type="text" class="seg-sec" inputmode="numeric" maxlength="2" />
           <span class="sep">"</span>
@@ -165,7 +165,7 @@
         </div>
         <label class="repeat-label">
           Repeat
-          <input type="text" class="group-repeats" inputmode="numeric" maxlength="3" value="10" />
+          <select class="group-repeats" aria-label="Repeat count"></select>
           ×
         </label>
         <button type="button" class="row-del group-del" aria-label="Delete group" title="Delete">
