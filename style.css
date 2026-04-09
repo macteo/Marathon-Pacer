@@ -195,13 +195,17 @@ main {
   }
 }
 /* Labels sit AFTER their value box (flex order: 2) and are aligned
-   along the text baseline, so "km" / "pace" read as unit suffixes. */
+   along the text baseline, so "km" / "pace" read as unit suffixes.
+   Fields themselves do NOT grow — each value box has a compact
+   content-sized width, so the row stays visually balanced and the
+   inputs aren't huge empty rectangles. The leftover row space is
+   absorbed by margin-left: auto on the delete button. */
 .segment-row .field {
   display: flex;
   flex-direction: row;
   align-items: baseline;
   gap: 6px;
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 0;
 }
 .segment-row label {
@@ -214,8 +218,7 @@ main {
   white-space: nowrap;
 }
 .segment-row input[type="text"] {
-  flex: 1 1 0;
-  width: 100%;
+  flex: 0 1 auto;
   height: var(--tap);
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -223,14 +226,15 @@ main {
   color: var(--text);
   padding: 0 10px;
   font-size: 1rem;
-  min-width: 0;
+  min-width: 40px;
 }
 .segment-row .seg-distance {
   text-align: right;
+  width: 80px;
 }
 
 .pace-field {
-  flex: 1.4 1 0;
+  flex: 0 1 auto;
 }
 .pace-inputs {
   display: flex;
@@ -241,7 +245,9 @@ main {
   border-radius: 10px;
   padding: 0 6px;
   height: var(--tap);
-  min-width: 0;
+  width: 116px;
+  flex: 0 1 auto;
+  min-width: 80px;
 }
 .pace-inputs input[type="text"],
 .pace-inputs select {
@@ -300,7 +306,9 @@ main {
 }
 
 /* Round delete button — distinct from the text boxes and painted red
-   so it clearly reads as a destructive action. */
+   so it clearly reads as a destructive action. margin-left: auto on
+   the per-row button absorbs any leftover row space so the delete
+   sits at the far right of the segment row. */
 .row-del {
   flex: 0 0 auto;
   width: 30px;
@@ -315,6 +323,9 @@ main {
   align-items: center;
   justify-content: center;
   align-self: center;
+}
+.segment-row > .row-del {
+  margin-left: auto;
 }
 .row-del:hover,
 .row-del:active {
@@ -445,7 +456,8 @@ main {
   color: var(--accent);
 }
 .readonly-dist {
-  flex: 1 1 0;
+  flex: 0 1 auto;
+  width: 104px;
   height: var(--tap);
   display: flex;
   align-items: center;
@@ -456,7 +468,7 @@ main {
   border: 1px solid var(--border);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  min-width: 0;
+  min-width: 60px;
 }
 .final-row .drag-handle,
 .final-row .row-del {
