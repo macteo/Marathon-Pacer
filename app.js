@@ -283,6 +283,10 @@
     });
   }
 
+  function applyRowTint(row, color) {
+    if (row && color && color.bg) row.style.backgroundColor = color.bg;
+  }
+
   function renderBlocks() {
     blocksEl.innerHTML = "";
 
@@ -294,6 +298,9 @@
       return;
     }
 
+    // Shared color mapping between rows and the chart.
+    const colorMap = assignSegmentColors(state.blocks);
+
     for (const block of state.blocks) {
       if (block.type === "segment") {
         const row = renderSegmentRow(block.segment, () => {
@@ -301,6 +308,7 @@
           update();
         });
         row.setAttribute("data-block-id", block.id);
+        applyRowTint(row, colorMap.get(block.segment.id));
         attachDragHandle(row.querySelector(".drag-handle"), block.id);
         blocksEl.appendChild(row);
       } else {
@@ -334,6 +342,8 @@
             update();
           });
           segWrap.appendChild(row);
+          // The new segment doesn't have a color yet — full re-render
+          // after recalc assigns it one on the next update().
           recalc();
         });
 
@@ -342,6 +352,7 @@
             block.segments = block.segments.filter((s) => s.id !== seg.id);
             update();
           });
+          applyRowTint(row, colorMap.get(seg.id));
           segWrap.appendChild(row);
         }
 
@@ -659,17 +670,45 @@
   }
 
   // Distinct colors cycled per source segment so each segment (and each
-  // of its repetitions) gets a recognisable tint in the area chart.
+  // of its repetitions) gets a recognisable tint in the area chart AND
+  // in the segment row background, so the two views agree visually.
+  // `line` and `fill` are used by the chart; `bg` is a low-alpha tint
+  // used as the segment row's background.
   const SEGMENT_PALETTE = [
-    { line: "#0b6efd", fill: "rgba(11, 110, 253, 0.32)" },
-    { line: "#10b981", fill: "rgba(16, 185, 129, 0.32)" },
-    { line: "#8b5cf6", fill: "rgba(139, 92, 246, 0.32)" },
-    { line: "#ec4899", fill: "rgba(236, 72, 153, 0.32)" },
-    { line: "#06b6d4", fill: "rgba(6, 182, 212, 0.32)" },
-    { line: "#f97316", fill: "rgba(249, 115, 22, 0.32)" },
-    { line: "#84cc16", fill: "rgba(132, 204, 22, 0.32)" },
-    { line: "#a855f7", fill: "rgba(168, 85, 247, 0.32)" },
+    { line: "#0b6efd", fill: "rgba(11, 110, 253, 0.32)", bg: "rgba(11, 110, 253, 0.12)" },
+    { line: "#10b981", fill: "rgba(16, 185, 129, 0.32)", bg: "rgba(16, 185, 129, 0.14)" },
+    { line: "#8b5cf6", fill: "rgba(139, 92, 246, 0.32)", bg: "rgba(139, 92, 246, 0.13)" },
+    { line: "#ec4899", fill: "rgba(236, 72, 153, 0.32)", bg: "rgba(236, 72, 153, 0.12)" },
+    { line: "#06b6d4", fill: "rgba(6, 182, 212, 0.32)", bg: "rgba(6, 182, 212, 0.13)" },
+    { line: "#f97316", fill: "rgba(249, 115, 22, 0.32)", bg: "rgba(249, 115, 22, 0.12)" },
+    { line: "#84cc16", fill: "rgba(132, 204, 22, 0.32)", bg: "rgba(132, 204, 22, 0.14)" },
+    { line: "#a855f7", fill: "rgba(168, 85, 247, 0.32)", bg: "rgba(168, 85, 247, 0.13)" },
   ];
+
+  // Walk a plan's blocks in order and assign each distinct source
+  // segment id a palette entry — this is the shared color mapping
+  // between the segment rows and the chart, so the first segment
+  // reads bluish in both places, the second green, etc.
+  function assignSegmentColors(blocks) {
+    const map = new Map();
+    let idx = 0;
+    for (const block of blocks || []) {
+      if (block.type === "segment" && block.segment) {
+        if (!map.has(block.segment.id)) {
+          map.set(block.segment.id, SEGMENT_PALETTE[idx % SEGMENT_PALETTE.length]);
+          idx++;
+        }
+      } else if (block.type === "group") {
+        for (const seg of block.segments || []) {
+          if (!map.has(seg.id)) {
+            map.set(seg.id, SEGMENT_PALETTE[idx % SEGMENT_PALETTE.length]);
+            idx++;
+          }
+        }
+      }
+    }
+    return map;
+  }
 
   function svgEl(name, attrs) {
     const el = document.createElementNS(SVG_NS, name);
@@ -756,22 +795,16 @@
       }
 
       // ---- Per-segment coloring ----
-      // Each distinct source segment gets its own color from the palette
-      // (so every repetition of the same segment looks alike). The auto
-      // final segment keeps its dedicated accent color.
-      const colorBySource = new Map();
-      let colorIdx = 0;
+      // Shared with the segment row backgrounds — same order, same
+      // palette, so the first segment reads bluish in both places.
+      const colorMap = assignSegmentColors(state.blocks);
       for (const entry of data) {
         if (entry.isFinal) {
           entry._color = { line: colors.finalLine, fill: colors.finalFill };
           continue;
         }
-        const sid = entry.seg.id || "anon";
-        if (!colorBySource.has(sid)) {
-          colorBySource.set(sid, SEGMENT_PALETTE[colorIdx % SEGMENT_PALETTE.length]);
-          colorIdx++;
-        }
-        entry._color = colorBySource.get(sid);
+        const c = colorMap.get(entry.seg.id);
+        entry._color = c || SEGMENT_PALETTE[0];
       }
 
       // ---- Draw each segment as its own filled rectangle + top line ----
@@ -1114,8 +1147,10 @@
   }
 
   // Tiny inline stepped area chart for one plan row. Shares the palette
-  // with the main chart so the same segment reads the same color.
-  function renderPlanSparkline(data) {
+  // with the main chart so the same segment reads the same color. The
+  // `blocks` argument is the plan's own blocks (the same ones that
+  // produced `data`) and drives the color map.
+  function renderPlanSparkline(data, blocks) {
     const W = 96;
     const H = 32;
     const svg = svgEl("svg", {
@@ -1144,20 +1179,15 @@
     const yScale = (sec) => padY + ((sec - yMin) / (yMax - yMin)) * innerH;
     const baseY = padY + innerH;
 
-    const colorBySource = new Map();
-    let ci = 0;
     const finalColor = { line: "#f59e0b", fill: "rgba(245, 158, 11, 0.4)" };
+    const colorMap = assignSegmentColors(blocks || []);
     for (const entry of data) {
       if (entry.isFinal) {
         entry._color = finalColor;
         continue;
       }
-      const sid = (entry.seg && entry.seg.id) || "anon";
-      if (!colorBySource.has(sid)) {
-        colorBySource.set(sid, SEGMENT_PALETTE[ci % SEGMENT_PALETTE.length]);
-        ci++;
-      }
-      entry._color = colorBySource.get(sid);
+      const c = colorMap.get(entry.seg && entry.seg.id);
+      entry._color = c || SEGMENT_PALETTE[0];
     }
 
     let cumKm = 0;
@@ -1232,7 +1262,7 @@
       info.appendChild(name);
       info.appendChild(meta);
       load.appendChild(info);
-      load.appendChild(renderPlanSparkline(stats.data));
+      load.appendChild(renderPlanSparkline(stats.data, p.plan && p.plan.blocks));
 
       load.addEventListener("click", () => {
         if (confirm(`Load "${p.name}"? This replaces the current plan.`)) {

@@ -481,6 +481,8 @@ main {
 }
 .final-row {
   padding-left: 10px;
+  /* Match the orange accent the chart uses for the auto final segment. */
+  background-color: rgba(245, 158, 11, 0.14);
 }
 
 .summary-grid {
