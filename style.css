@@ -235,6 +235,9 @@ main {
 
 .pace-field {
   flex: 0 1 auto;
+  /* Extra breathing room between the "km" label and the start of
+     the pace field — 3x the normal row gap. */
+  margin-left: 24px;
 }
 .pace-inputs {
   display: flex;
@@ -623,6 +626,9 @@ main {
   }
   .segment-row .field {
     gap: 4px;
+  }
+  .pace-field {
+    margin-left: 16px;
   }
   .segment-row label {
     font-size: 0.62rem;
