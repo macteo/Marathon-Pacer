@@ -240,10 +240,12 @@ main {
   font-size: 0.95rem;
 }
 
-/* Drag handle — left of the segment row or group head */
+/* Drag handle — left of the segment row or group head. Kept at least
+   28–32px wide so it's a reliable touch target on mobile; the visible
+   dots glyph stays small but the hit box is larger. */
 .drag-handle {
   flex: 0 0 auto;
-  width: 20px;
+  width: 28px;
   height: var(--tap);
   display: flex;
   align-items: center;
@@ -571,7 +573,7 @@ main {
     padding: 0 4px;
   }
   .drag-handle {
-    width: 16px;
+    width: 24px;
   }
   .row-del {
     width: 26px;
