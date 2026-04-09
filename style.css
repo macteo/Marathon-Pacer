@@ -194,18 +194,20 @@ main {
     box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);
   }
 }
-/* Labels now sit inline to the LEFT of their value box. */
+/* Labels sit AFTER their value box (flex order: 2) and are aligned
+   along the text baseline, so "km" / "pace" read as unit suffixes. */
 .segment-row .field {
   display: flex;
   flex-direction: row;
-  align-items: center;
+  align-items: baseline;
   gap: 6px;
   flex: 1 1 0;
   min-width: 0;
 }
 .segment-row label {
   flex: 0 0 auto;
-  font-size: 0.68rem;
+  order: 2;
+  font-size: 0.66rem;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
