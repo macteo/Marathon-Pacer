@@ -160,6 +160,19 @@ main {
   flex-direction: column;
   gap: 10px;
 }
+/* Top-level blocks animate transform, so during a drag the siblings
+   slide smoothly out of the way to open a slot for the dragged block.
+   The dragged block itself overrides this with transition: none below
+   so its follow-finger transform stays instantaneous. */
+.blocks > .segment-row,
+.blocks > .group-block {
+  transition: transform 180ms cubic-bezier(0.2, 0, 0, 1);
+  will-change: transform;
+}
+.blocks > .segment-row.is-dragging,
+.blocks > .group-block.is-dragging {
+  transition: none;
+}
 
 .segment-row {
   display: flex;

@@ -398,6 +398,29 @@
     const blockEl = blocksEl.querySelector(`[data-block-id="${blockId}"]`);
     if (!blockEl) return;
 
+    // Snapshot every top-level block's natural top + height. These
+    // values are the ground truth for the rest of the gesture — we
+    // never re-measure (a re-measure would include our own transforms
+    // and lie about the layout), so the threshold + slot math always
+    // refers back to these stable numbers.
+    const cachedPositions = state.blocks
+      .map((b) => {
+        const el = blocksEl.querySelector(`[data-block-id="${b.id}"]`);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { el, blockId: b.id, top: r.top, height: r.height };
+      })
+      .filter(Boolean);
+
+    // Read the flex gap between blocks so the slot math works for any
+    // value of .blocks { gap: ... } in CSS.
+    let gap = 10;
+    try {
+      const cs = window.getComputedStyle(blocksEl);
+      const parsed = parseFloat(cs.rowGap || cs.gap);
+      if (isFinite(parsed) && parsed >= 0) gap = parsed;
+    } catch (err) {}
+
     const startY = getClientY(e);
     dragState = {
       blockId,
@@ -406,6 +429,9 @@
       handleEl,
       startY,
       lastY: startY,
+      desiredIdx: state.blocks.findIndex((b) => b.id === blockId),
+      cachedPositions,
+      gap,
     };
     applyDraggingStyles(blockEl);
     // Belt-and-suspenders: kill scrolling on the whole document for the
@@ -428,6 +454,55 @@
     }
   }
 
+  function computeDesiredIdx(fingerY) {
+    const { blockId, cachedPositions } = dragState;
+    const nonDragged = cachedPositions.filter((p) => p.blockId !== blockId);
+    let idx = nonDragged.length;
+    for (let i = 0; i < nonDragged.length; i++) {
+      const c = nonDragged[i];
+      if (fingerY < c.top + c.height / 2) {
+        idx = i;
+        break;
+      }
+    }
+    return idx;
+  }
+
+  // Push non-dragged siblings out of the way to open a slot at
+  // desiredIdx. We don't mutate state — the layout is computed against
+  // a virtual reordering of state.blocks, and applied as transforms.
+  function applySiblingShifts(desiredIdx) {
+    const { blockId, cachedPositions, gap } = dragState;
+
+    const orderedIds = state.blocks.map((b) => b.id);
+    const dragOrig = orderedIds.indexOf(blockId);
+    if (dragOrig < 0) return;
+    orderedIds.splice(dragOrig, 1);
+    orderedIds.splice(desiredIdx, 0, blockId);
+
+    // Walk the new order from the topmost cached position downward,
+    // accumulating cached heights + the configured gap.
+    const startTop = cachedPositions.length
+      ? Math.min.apply(null, cachedPositions.map((c) => c.top))
+      : 0;
+    let curY = startTop;
+    const newTops = {};
+    for (const id of orderedIds) {
+      const cached = cachedPositions.find((c) => c.blockId === id);
+      if (!cached) continue;
+      newTops[id] = curY;
+      curY += cached.height + gap;
+    }
+
+    for (const cached of cachedPositions) {
+      if (cached.blockId === blockId) continue;
+      const target = newTops[cached.blockId];
+      if (target == null) continue;
+      const dy = target - cached.top;
+      cached.el.style.transform = `translateY(${dy}px)`;
+    }
+  }
+
   function onDragMove(e) {
     if (!dragState) return;
     // Must be called on every move or iOS resumes scrolling.
@@ -436,32 +511,28 @@
     if (y == null || !isFinite(y)) return;
 
     dragState.lastY = y;
+    // 1. The dragged block follows the finger immediately (no
+    //    transition — we override transition on .is-dragging).
     const dy = y - dragState.startY;
-    // Visual follow-finger via transform; the rest of the layout is
-    // untouched until the user releases.
     dragState.blockEl.style.transform = `translateY(${dy}px)`;
+
+    // 2. If the finger has crossed a sibling midpoint, push the
+    //    siblings out of the way to open a slot for the drop. Their
+    //    transition: transform makes the shift animate smoothly.
+    const newDesired = computeDesiredIdx(y);
+    if (newDesired !== dragState.desiredIdx) {
+      dragState.desiredIdx = newDesired;
+      applySiblingShifts(newDesired);
+    }
   }
 
   function onDragEnd() {
     if (!dragState) return;
-    const { blockId, blockEl, handleEl, lastY, isTouch } = dragState;
+    const { blockId, blockEl, handleEl, isTouch, cachedPositions, desiredIdx } =
+      dragState;
 
-    // Compute target index from the last finger position. We test
-    // against the CURRENT (un-transformed) rects of the non-dragged
-    // siblings — same midpoint logic as before, just at release time.
-    const allEls = Array.from(blocksEl.querySelectorAll("[data-block-id]"));
-    const nonDragged = allEls.filter((el) => el.dataset.blockId !== blockId);
-    let targetIdx = nonDragged.length;
-    for (let i = 0; i < nonDragged.length; i++) {
-      const r = nonDragged[i].getBoundingClientRect();
-      if (lastY < r.top + r.height / 2) {
-        targetIdx = i;
-        break;
-      }
-    }
-
-    // Tear down listeners and styles BEFORE the state mutation, so a
-    // re-render produces a clean DOM tree.
+    // Tear down listeners and the global no-scroll lock first, so the
+    // upcoming re-render produces a clean DOM tree.
     if (isTouch && handleEl) {
       handleEl.removeEventListener("touchmove", onDragMove);
       handleEl.removeEventListener("touchend", onDragEnd);
@@ -472,13 +543,22 @@
     }
     document.body.style.touchAction = "";
     document.documentElement.style.touchAction = "";
+
+    // Clear every transform we wrote (siblings + the dragged block).
+    // The browser will repaint the un-transformed layout in the same
+    // tick as update() below, so the user never sees a snap-back.
+    for (const cached of cachedPositions) {
+      if (cached.blockId === blockId) continue;
+      cached.el.style.transform = "";
+    }
     clearDraggingStyles(blockEl);
+
     dragState = null;
 
     const currentIdx = state.blocks.findIndex((b) => b.id === blockId);
-    if (currentIdx < 0 || currentIdx === targetIdx) return;
+    if (currentIdx < 0 || currentIdx === desiredIdx) return;
     const [moved] = state.blocks.splice(currentIdx, 1);
-    state.blocks.splice(targetIdx, 0, moved);
+    state.blocks.splice(desiredIdx, 0, moved);
     update();
   }
 
