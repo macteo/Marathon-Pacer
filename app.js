@@ -343,13 +343,37 @@
     return e.clientY;
   }
 
+  function applyDraggingStyles(el) {
+    if (!el) return;
+    el.classList.add("is-dragging");
+    el.style.position = "relative";
+    el.style.zIndex = "10";
+    el.style.willChange = "transform";
+  }
+
+  function clearDraggingStyles(el) {
+    if (!el) return;
+    el.classList.remove("is-dragging");
+    el.style.transform = "";
+    el.style.position = "";
+    el.style.zIndex = "";
+    el.style.willChange = "";
+  }
+
   function startDrag(e, blockId, isTouch) {
     e.preventDefault();
     if (dragState) return;
 
-    dragState = { blockId, isTouch };
-    const el = blocksEl.querySelector(`[data-block-id="${blockId}"]`);
-    if (el) el.classList.add("is-dragging");
+    const blockEl = blocksEl.querySelector(`[data-block-id="${blockId}"]`);
+    if (!blockEl) return;
+
+    dragState = {
+      blockId,
+      isTouch,
+      blockEl,
+      startY: getClientY(e),
+    };
+    applyDraggingStyles(blockEl);
 
     if (isTouch) {
       // {passive: false} is THE fix: without it, preventDefault() in
@@ -370,33 +394,62 @@
     if (e.cancelable) e.preventDefault();
     const y = getClientY(e);
     if (y == null || !isFinite(y)) return;
-    const siblings = Array.from(blocksEl.querySelectorAll("[data-block-id]"));
-    let targetIdx = siblings.length;
-    for (let i = 0; i < siblings.length; i++) {
-      const rect = siblings[i].getBoundingClientRect();
-      if (y < rect.top + rect.height / 2) {
+
+    // 1. Move the dragged block visually with the finger.
+    const dy = y - dragState.startY;
+    dragState.blockEl.style.transform = `translateY(${dy}px)`;
+
+    // 2. Work out which slot the finger is now hovering over. We only
+    //    test non-dragged siblings, using their CURRENT layout rects
+    //    (not the dragged one's transformed rect), so the threshold is
+    //    "finger has crossed the midpoint of a real slot".
+    const draggedId = dragState.blockId;
+    const allEls = Array.from(blocksEl.querySelectorAll("[data-block-id]"));
+    const nonDragged = allEls.filter((el) => el.dataset.blockId !== draggedId);
+
+    let targetIdx = nonDragged.length;
+    for (let i = 0; i < nonDragged.length; i++) {
+      const r = nonDragged[i].getBoundingClientRect();
+      if (y < r.top + r.height / 2) {
         targetIdx = i;
         break;
       }
     }
-    const currentIdx = state.blocks.findIndex((b) => b.id === dragState.blockId);
+
+    // targetIdx in nonDragged == the final index of the dragged block
+    // in state.blocks after splice-remove-and-reinsert.
+    const currentIdx = state.blocks.findIndex((b) => b.id === draggedId);
     if (currentIdx < 0) return;
-    // The dragged block is still in the array while we look for the
-    // insertion index — adjust if it's moving down.
-    if (currentIdx < targetIdx) targetIdx -= 1;
     if (currentIdx === targetIdx) return;
+
+    // 3. Reorder state + re-render, but keep the dragged block visually
+    //    locked under the finger through the DOM swap. Classic FLIP:
+    //    capture the visual position BEFORE the re-render, measure the
+    //    new natural position AFTER, then apply a fresh transform that
+    //    cancels the layout jump.
+    const visualTop = dragState.blockEl.getBoundingClientRect().top;
+
     const [moved] = state.blocks.splice(currentIdx, 1);
     state.blocks.splice(targetIdx, 0, moved);
     update();
-    // Full re-render wiped the class off the dragged element — re-apply.
-    const el = blocksEl.querySelector(`[data-block-id="${dragState.blockId}"]`);
-    if (el) el.classList.add("is-dragging");
+
+    const newEl = blocksEl.querySelector(`[data-block-id="${draggedId}"]`);
+    if (!newEl) return;
+    applyDraggingStyles(newEl);
+    newEl.style.transform = "";
+    const naturalTop = newEl.getBoundingClientRect().top;
+    const newTransform = visualTop - naturalTop;
+    newEl.style.transform = `translateY(${newTransform}px)`;
+
+    // Re-base so subsequent touchmove deltas compute against the new
+    // element's natural position.
+    dragState.blockEl = newEl;
+    dragState.startY = y - newTransform;
   }
 
   function onDragEnd() {
     if (!dragState) return;
-    const el = blocksEl.querySelector(`[data-block-id="${dragState.blockId}"]`);
-    if (el) el.classList.remove("is-dragging");
+    clearDraggingStyles(dragState.blockEl);
     if (dragState.isTouch) {
       document.removeEventListener("touchmove", onDragMove, { passive: false });
       document.removeEventListener("touchend", onDragEnd);

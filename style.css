@@ -171,7 +171,15 @@ main {
   border-radius: 12px;
 }
 .segment-row.is-dragging {
-  opacity: 0.4;
+  /* The dragged row follows the finger — show it lifted, not dimmed,
+     so the user can see where it's going to land. */
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.18);
+  cursor: grabbing;
+}
+@media (prefers-color-scheme: dark) {
+  .segment-row.is-dragging {
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);
+  }
 }
 /* Labels now sit inline to the LEFT of their value box. */
 .segment-row .field {
@@ -337,7 +345,13 @@ main {
   padding: 10px 10px 12px;
 }
 .group-block.is-dragging {
-  opacity: 0.4;
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.2);
+  cursor: grabbing;
+}
+@media (prefers-color-scheme: dark) {
+  .group-block.is-dragging {
+    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.6);
+  }
 }
 .group-head {
   display: flex;
