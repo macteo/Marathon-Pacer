@@ -15,6 +15,25 @@
   const DEFAULT_PACE_MIN = 5;
   const DEFAULT_PACE_SEC = 0;
 
+  // Selectable ranges for the dropdowns. Pace minutes covers from elite
+  // running (~2'/km) up to brisk walking (~15'/km). Repeats covers the
+  // typical range for interval workouts.
+  const PACE_MIN_MIN = 2;
+  const PACE_MIN_MAX = 15;
+  const REPEATS_MIN = 1;
+  const REPEATS_MAX = 30;
+
+  function populateOptions(selectEl, min, max, current) {
+    while (selectEl.firstChild) selectEl.removeChild(selectEl.firstChild);
+    for (let i = min; i <= max; i++) {
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = String(i);
+      if (i === current) opt.selected = true;
+      selectEl.appendChild(opt);
+    }
+  }
+
   /** @type {{target:number, blocks:Block[], finalPaceMin:number, finalPaceSec:number}} */
   let state = {
     target: 42.195,
@@ -209,18 +228,25 @@
     const se = $(".seg-sec", node);
     const del = $(".seg-del", node);
 
-    // Show actual values (including 0) instead of falling back to "" so
-    // the user always starts from a real number rather than a blank box.
+    // Distance + seconds: free-form text. Minutes: dropdown.
     dist.value = seg.distance == null ? "" : String(seg.distance);
-    mi.value = seg.paceMin == null ? "" : String(seg.paceMin);
     se.value = seg.paceSec == null ? "" : String(seg.paceSec);
+
+    // Snap stored paceMin into the dropdown's range so an out-of-range
+    // value loaded from old localStorage doesn't display blank.
+    const clampedMin = Math.min(
+      PACE_MIN_MAX,
+      Math.max(PACE_MIN_MIN, seg.paceMin || PACE_MIN_MIN)
+    );
+    if (clampedMin !== seg.paceMin) seg.paceMin = clampedMin;
+    populateOptions(mi, PACE_MIN_MIN, PACE_MIN_MAX, clampedMin);
 
     dist.addEventListener("input", () => {
       seg.distance = parseNum(dist.value);
       recalc();
     });
-    mi.addEventListener("input", () => {
-      seg.paceMin = clampInputValue(mi, parseNum(mi.value), 0, 59);
+    mi.addEventListener("change", () => {
+      seg.paceMin = parseNum(mi.value);
       recalc();
     });
     se.addEventListener("input", () => {
@@ -235,22 +261,25 @@
   function attachDragHandle(handleEl, blockId) {
     if (!handleEl) return;
     // iOS Safari: native touch events are the only reliable way to
-    // preventDefault() and stop the browser's scroll gesture recogniser
-    // from stealing a vertical drag. Pointer events + setPointerCapture
-    // don't cut it there — the scroll decision happens before capture.
+    // preventDefault() and stop the browser's scroll recogniser.
+    // touchmove/end are attached directly to the handle element on
+    // drag start — touch events are always dispatched to the original
+    // touchstart target, so even if the finger leaves the handle, the
+    // listeners keep firing. Document-level touchmove listeners are
+    // unreliable on iOS: {passive: false} is silently ignored on some
+    // versions and preventDefault no-ops, letting the page scroll.
     handleEl.addEventListener(
       "touchstart",
       (e) => {
-        // Only single-finger drags.
         if (e.touches && e.touches.length > 1) return;
-        startDrag(e, blockId, /*isTouch*/ true);
+        startDrag(e, blockId, /*isTouch*/ true, handleEl);
       },
       { passive: false }
     );
     // Desktop / mouse.
     handleEl.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
-      startDrag(e, blockId, /*isTouch*/ false);
+      startDrag(e, blockId, /*isTouch*/ false, handleEl);
     });
   }
 
@@ -282,13 +311,15 @@
         const addBtn = $(".group-add-seg", node);
         const delBtn = $(".group-del", node);
 
-        repeatsInput.value = String(block.repeats);
-        repeatsInput.addEventListener("input", () => {
-          const v = Math.max(1, Math.floor(parseNum(repeatsInput.value, 1)));
-          block.repeats = v;
-          // Mirror the clamped value back into the input so the user
-          // can't leave negative / zero / non-numeric garbage in there.
-          if (String(v) !== repeatsInput.value) repeatsInput.value = String(v);
+        // Snap into the dropdown range, then populate.
+        const clampedReps = Math.min(
+          REPEATS_MAX,
+          Math.max(REPEATS_MIN, parseNum(block.repeats, REPEATS_MIN))
+        );
+        if (clampedReps !== block.repeats) block.repeats = clampedReps;
+        populateOptions(repeatsInput, REPEATS_MIN, REPEATS_MAX, clampedReps);
+        repeatsInput.addEventListener("change", () => {
+          block.repeats = parseNum(repeatsInput.value, REPEATS_MIN);
           recalc();
         });
         delBtn.addEventListener("click", () => {
@@ -360,28 +391,37 @@
     el.style.willChange = "";
   }
 
-  function startDrag(e, blockId, isTouch) {
+  function startDrag(e, blockId, isTouch, handleEl) {
     e.preventDefault();
     if (dragState) return;
 
     const blockEl = blocksEl.querySelector(`[data-block-id="${blockId}"]`);
     if (!blockEl) return;
 
+    const startY = getClientY(e);
     dragState = {
       blockId,
       isTouch,
       blockEl,
-      startY: getClientY(e),
+      handleEl,
+      startY,
+      lastY: startY,
     };
     applyDraggingStyles(blockEl);
+    // Belt-and-suspenders: kill scrolling on the whole document for the
+    // entire drag, in case any individual touch-action trick fails.
+    document.body.style.touchAction = "none";
+    document.documentElement.style.touchAction = "none";
 
     if (isTouch) {
-      // {passive: false} is THE fix: without it, preventDefault() in
-      // touchmove is silently ignored on iOS and the page scrolls
-      // instead of the block moving.
-      document.addEventListener("touchmove", onDragMove, { passive: false });
-      document.addEventListener("touchend", onDragEnd);
-      document.addEventListener("touchcancel", onDragEnd);
+      // Listen on the HANDLE element directly. Touch events are always
+      // dispatched to the original touchstart target, so even if the
+      // finger leaves the handle, our touchmove listener keeps firing.
+      // We never re-render mid-drag, so the handle DOM node survives
+      // for the whole gesture and the listeners stay valid.
+      handleEl.addEventListener("touchmove", onDragMove, { passive: false });
+      handleEl.addEventListener("touchend", onDragEnd);
+      handleEl.addEventListener("touchcancel", onDragEnd);
     } else {
       document.addEventListener("mousemove", onDragMove);
       document.addEventListener("mouseup", onDragEnd);
@@ -395,70 +435,51 @@
     const y = getClientY(e);
     if (y == null || !isFinite(y)) return;
 
-    // 1. Move the dragged block visually with the finger.
+    dragState.lastY = y;
     const dy = y - dragState.startY;
+    // Visual follow-finger via transform; the rest of the layout is
+    // untouched until the user releases.
     dragState.blockEl.style.transform = `translateY(${dy}px)`;
+  }
 
-    // 2. Work out which slot the finger is now hovering over. We only
-    //    test non-dragged siblings, using their CURRENT layout rects
-    //    (not the dragged one's transformed rect), so the threshold is
-    //    "finger has crossed the midpoint of a real slot".
-    const draggedId = dragState.blockId;
+  function onDragEnd() {
+    if (!dragState) return;
+    const { blockId, blockEl, handleEl, lastY, isTouch } = dragState;
+
+    // Compute target index from the last finger position. We test
+    // against the CURRENT (un-transformed) rects of the non-dragged
+    // siblings — same midpoint logic as before, just at release time.
     const allEls = Array.from(blocksEl.querySelectorAll("[data-block-id]"));
-    const nonDragged = allEls.filter((el) => el.dataset.blockId !== draggedId);
-
+    const nonDragged = allEls.filter((el) => el.dataset.blockId !== blockId);
     let targetIdx = nonDragged.length;
     for (let i = 0; i < nonDragged.length; i++) {
       const r = nonDragged[i].getBoundingClientRect();
-      if (y < r.top + r.height / 2) {
+      if (lastY < r.top + r.height / 2) {
         targetIdx = i;
         break;
       }
     }
 
-    // targetIdx in nonDragged == the final index of the dragged block
-    // in state.blocks after splice-remove-and-reinsert.
-    const currentIdx = state.blocks.findIndex((b) => b.id === draggedId);
-    if (currentIdx < 0) return;
-    if (currentIdx === targetIdx) return;
-
-    // 3. Reorder state + re-render, but keep the dragged block visually
-    //    locked under the finger through the DOM swap. Classic FLIP:
-    //    capture the visual position BEFORE the re-render, measure the
-    //    new natural position AFTER, then apply a fresh transform that
-    //    cancels the layout jump.
-    const visualTop = dragState.blockEl.getBoundingClientRect().top;
-
-    const [moved] = state.blocks.splice(currentIdx, 1);
-    state.blocks.splice(targetIdx, 0, moved);
-    update();
-
-    const newEl = blocksEl.querySelector(`[data-block-id="${draggedId}"]`);
-    if (!newEl) return;
-    applyDraggingStyles(newEl);
-    newEl.style.transform = "";
-    const naturalTop = newEl.getBoundingClientRect().top;
-    const newTransform = visualTop - naturalTop;
-    newEl.style.transform = `translateY(${newTransform}px)`;
-
-    // Re-base so subsequent touchmove deltas compute against the new
-    // element's natural position.
-    dragState.blockEl = newEl;
-    dragState.startY = y - newTransform;
-  }
-
-  function onDragEnd() {
-    if (!dragState) return;
-    clearDraggingStyles(dragState.blockEl);
-    if (dragState.isTouch) {
-      document.removeEventListener("touchmove", onDragMove, { passive: false });
-      document.removeEventListener("touchend", onDragEnd);
-      document.removeEventListener("touchcancel", onDragEnd);
+    // Tear down listeners and styles BEFORE the state mutation, so a
+    // re-render produces a clean DOM tree.
+    if (isTouch && handleEl) {
+      handleEl.removeEventListener("touchmove", onDragMove);
+      handleEl.removeEventListener("touchend", onDragEnd);
+      handleEl.removeEventListener("touchcancel", onDragEnd);
     } else {
       document.removeEventListener("mousemove", onDragMove);
       document.removeEventListener("mouseup", onDragEnd);
     }
+    document.body.style.touchAction = "";
+    document.documentElement.style.touchAction = "";
+    clearDraggingStyles(blockEl);
     dragState = null;
+
+    const currentIdx = state.blocks.findIndex((b) => b.id === blockId);
+    if (currentIdx < 0 || currentIdx === targetIdx) return;
+    const [moved] = state.blocks.splice(currentIdx, 1);
+    state.blocks.splice(targetIdx, 0, moved);
+    update();
   }
 
   function renderFinalAndSummary() {
@@ -851,8 +872,8 @@
   const finalMin = $("#final-pace-min");
   const finalSec = $("#final-pace-sec");
 
-  finalMin.addEventListener("input", () => {
-    state.finalPaceMin = clampInputValue(finalMin, parseNum(finalMin.value), 0, 59);
+  finalMin.addEventListener("change", () => {
+    state.finalPaceMin = parseNum(finalMin.value, DEFAULT_PACE_MIN);
     recalc();
   });
   finalSec.addEventListener("input", () => {
@@ -880,7 +901,7 @@
     try {
       localStorage.removeItem(STORAGE_KEY);
     } catch (e) {}
-    finalMin.value = String(state.finalPaceMin);
+    populateOptions(finalMin, PACE_MIN_MIN, PACE_MIN_MAX, state.finalPaceMin);
     finalSec.value = String(state.finalPaceSec);
     syncTargetInputs();
     update();
@@ -949,7 +970,11 @@
       entry.plan.finalPaceMin != null ? entry.plan.finalPaceMin : DEFAULT_PACE_MIN;
     state.finalPaceSec =
       entry.plan.finalPaceSec != null ? entry.plan.finalPaceSec : DEFAULT_PACE_SEC;
-    finalMin.value = String(state.finalPaceMin);
+    state.finalPaceMin = Math.min(
+      PACE_MIN_MAX,
+      Math.max(PACE_MIN_MIN, state.finalPaceMin)
+    );
+    populateOptions(finalMin, PACE_MIN_MIN, PACE_MIN_MAX, state.finalPaceMin);
     finalSec.value = String(state.finalPaceSec);
     syncTargetInputs();
     update();
@@ -1168,10 +1193,14 @@
   // ----- Init -----
   load();
   // Make sure final pace inputs are pre-filled (for old saved state where
-  // they may still be null).
+  // they may still be null) and snap minutes into the dropdown range.
   if (state.finalPaceMin == null) state.finalPaceMin = DEFAULT_PACE_MIN;
   if (state.finalPaceSec == null) state.finalPaceSec = DEFAULT_PACE_SEC;
-  finalMin.value = String(state.finalPaceMin);
+  state.finalPaceMin = Math.min(
+    PACE_MIN_MAX,
+    Math.max(PACE_MIN_MIN, state.finalPaceMin)
+  );
+  populateOptions(finalMin, PACE_MIN_MIN, PACE_MIN_MAX, state.finalPaceMin);
   finalSec.value = String(state.finalPaceSec);
   syncTargetInputs();
   renderPlans();
