@@ -928,6 +928,7 @@
     renderFinalAndSummary();
     renderChart();
     save();
+    scheduleShareUrlUpdate();
   }
 
   // Full re-render: only call when the structure of blocks changes
@@ -1563,59 +1564,6 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  async function handleExportClick() {
-    const svg = buildExportSvg();
-    if (!svg) {
-      alert("No chart to export yet.");
-      return;
-    }
-    let blob;
-    try {
-      blob = await svgToPngBlob(svg, 2);
-    } catch (e) {
-      console.error("Chart export failed:", e);
-      alert("Could not export chart image.");
-      return;
-    }
-
-    const r = computeFinal();
-    const mins = Math.floor(r.totalSeconds / 60);
-    const filename = `run-pacer-${formatDistance(r.totalDistance)
-      .replace(/\s+/g, "")
-      .replace(/\./g, "_")}-${mins}min.png`;
-
-    // Prefer the native share sheet with the PNG as a file attachment
-    // on mobile — this is what actually gives you a proper image
-    // preview in iMessage / WhatsApp / etc., since the recipient gets
-    // a real image rather than a URL that needs server-side unfurling.
-    try {
-      if (
-        navigator.canShare &&
-        typeof File !== "undefined" &&
-        navigator.share
-      ) {
-        const file = new File([blob], filename, { type: "image/png" });
-        if (navigator.canShare({ files: [file] })) {
-          await navigator.share({
-            files: [file],
-            title: "Run Pacer chart",
-          });
-          return;
-        }
-      }
-    } catch (e) {
-      if (e && e.name === "AbortError") return;
-      // Otherwise fall through to a plain download.
-    }
-
-    downloadBlob(blob, filename);
-    showToast("Chart image downloaded");
-  }
-
-  $("#export-chart").addEventListener("click", () => {
-    handleExportClick();
-  });
-
   // ----- Share link: encode / decode -----
   //
   // A plan is serialized to a compact tuple form (no IDs, no field
@@ -1768,6 +1716,61 @@
     return base + "#p=" + encoded;
   }
 
+  // Live URL sync: keep location.hash in lockstep with the current
+  // plan so the browser address bar is always a valid share link.
+  // Debounced so that rapid edits (typing in a distance/seconds field)
+  // don't thrash the encoder, and guarded by a generation counter so
+  // stale async encodes can't win the race against fresher ones.
+  let urlUpdateTimer = null;
+  let urlUpdateGen = 0;
+  const URL_UPDATE_DEBOUNCE_MS = 250;
+
+  function scheduleShareUrlUpdate() {
+    if (urlUpdateTimer) clearTimeout(urlUpdateTimer);
+    urlUpdateTimer = setTimeout(() => {
+      urlUpdateTimer = null;
+      runShareUrlUpdate();
+    }, URL_UPDATE_DEBOUNCE_MS);
+  }
+
+  async function runShareUrlUpdate() {
+    const gen = ++urlUpdateGen;
+    // For the pristine default plan, don't dirty the address bar with
+    // a payload — leave the URL as the plain landing page.
+    if (isDefaultLandingPlan(currentPlanBody())) {
+      if (location.hash && location.hash.startsWith("#p=")) {
+        try {
+          history.replaceState(
+            null,
+            "",
+            location.pathname + location.search
+          );
+        } catch (e) {}
+      }
+      return;
+    }
+    let encoded;
+    try {
+      encoded = await encodeSharePayload(planToCompact(state));
+    } catch (e) {
+      console.warn("Live URL encode failed:", e);
+      return;
+    }
+    // A newer edit has already been scheduled — drop this one.
+    if (gen !== urlUpdateGen) return;
+    const newHash = "#p=" + encoded;
+    if (location.hash === newHash) return;
+    try {
+      history.replaceState(
+        null,
+        "",
+        location.pathname + location.search + newHash
+      );
+    } catch (e) {
+      console.warn("history.replaceState failed:", e);
+    }
+  }
+
   // Transient toast at the bottom of the screen. Used for share-link
   // feedback and import confirmation. Multiple calls replace the
   // previous message.
@@ -1787,6 +1790,19 @@
     }, 2600);
   }
 
+  // Describe the current plan as a short human-readable one-liner —
+  // used both as the `text` field of navigator.share and as an inline
+  // subtitle the user can read back in the toast message.
+  function buildShareText() {
+    const r = computeFinal();
+    const avgPace = r.totalDistance > 0 ? r.totalSeconds / r.totalDistance : 0;
+    const parts = ["Run Pacer plan"];
+    if (r.totalDistance > 0) parts.push(formatDistance(r.totalDistance));
+    if (r.totalSeconds > 0) parts.push(formatHMS(r.totalSeconds));
+    if (avgPace > 0) parts.push("avg " + formatPace(avgPace));
+    return parts.join(" · ");
+  }
+
   async function handleShareClick() {
     let url;
     try {
@@ -1796,21 +1812,82 @@
       alert("Could not build share link.");
       return;
     }
+    const text = buildShareText();
 
-    // Always copy the bare URL to the clipboard. We intentionally do
-    // NOT use navigator.share: on iOS / Android its share sheet attaches
-    // extra text alongside the URL, and several messaging apps (iMessage,
-    // WhatsApp) then strip the #fragment when they auto-link the message,
-    // which would quietly drop the entire plan payload.
+    // Build a PNG of the chart to attach. If rendering fails for any
+    // reason the share still goes through with just link + text.
+    let file = null;
     try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(url);
-        showToast("Share link copied to clipboard");
+      const svg = buildExportSvg();
+      if (svg) {
+        const blob = await svgToPngBlob(svg, 2);
+        if (blob) {
+          file = new File([blob], "run-pacer-chart.png", {
+            type: "image/png",
+          });
+        }
+      }
+    } catch (e) {
+      console.warn("Chart render for share failed:", e);
+    }
+
+    // Prefer the native share sheet with the PNG attached — this is
+    // what gives the recipient a rich message on iMessage / WhatsApp
+    // (image preview + descriptive text + tappable link) in a single
+    // send. The previous "copy-only" fix was about unfurl scraping of
+    // naked URLs, which doesn't apply here: the image IS the preview.
+    try {
+      if (
+        navigator.share &&
+        typeof File !== "undefined" &&
+        file &&
+        navigator.canShare &&
+        navigator.canShare({ files: [file], url, text })
+      ) {
+        await navigator.share({
+          title: "Run Pacer plan",
+          text,
+          url,
+          files: [file],
+        });
+        return;
+      }
+      // No file-sharing support: degrade to sharing text+url only.
+      if (navigator.share && navigator.canShare && navigator.canShare({ url })) {
+        await navigator.share({ title: "Run Pacer plan", text, url });
         return;
       }
     } catch (e) {
-      // Clipboard blocked (e.g. insecure context) — fall through to the
-      // manual prompt so the user can still copy the URL by hand.
+      if (e && e.name === "AbortError") return;
+      console.warn("navigator.share failed, falling back:", e);
+    }
+
+    // Desktop / unsupported fallback: copy the URL to the clipboard
+    // AND trigger a PNG download so the user can attach it manually
+    // wherever they want to paste the link.
+    let copied = false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(url);
+        copied = true;
+      }
+    } catch (e) {
+      // fall through
+    }
+    if (file) {
+      try {
+        downloadBlob(file, file.name);
+      } catch (e) {
+        console.warn("Chart download failed:", e);
+      }
+    }
+    if (copied) {
+      showToast(
+        file
+          ? "Link copied · chart image downloaded"
+          : "Share link copied to clipboard"
+      );
+      return;
     }
     prompt("Copy this share link:", url);
   }
@@ -1971,16 +2048,18 @@
       return false;
     }
 
+    // If the on-screen plan already matches what's in the URL (e.g.
+    // the user just reloaded, or our own live URL-sync just wrote
+    // this same hash), skip the whole import — no auto-save, no
+    // toast, no redundant work.
+    if (plansEqual(imported, currentPlanBody())) {
+      return false;
+    }
+
     const autoSaved = autoSaveCurrentIfNeeded();
     replaceStateWithImported(imported);
     addImportedToSavedPlans(imported);
     renderPlans();
-
-    // Remove the hash so a later refresh doesn't re-import the same
-    // plan on top of whatever the user has edited since.
-    try {
-      history.replaceState(null, "", location.pathname + location.search);
-    } catch (e) {}
 
     if (autoSaved) {
       showToast('Imported shared plan (previous plan kept as "' + autoSaved.name + '")');

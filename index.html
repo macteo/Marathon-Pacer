@@ -93,23 +93,21 @@
     </section>
 
     <section class="card chart-card">
-      <div class="card-head">
-        <h2>Pace by distance</h2>
-        <div class="head-actions">
-          <button type="button" class="btn btn-ghost" id="export-chart">Export image</button>
-        </div>
-      </div>
+      <h2>Pace by distance</h2>
       <div class="chart-wrap">
         <svg id="pace-chart" viewBox="0 0 600 280" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Area chart of pace per kilometer along the route"></svg>
       </div>
       <p class="hint">Each segment uses its own color. The orange dashed line is your average pace; the vertical dashed line marks the target distance.</p>
     </section>
 
+    <section class="share-card">
+      <button type="button" class="btn btn-primary btn-full" id="share-plan">Share plan</button>
+    </section>
+
     <section class="card plans-card">
       <div class="card-head">
         <h2>Saved plans</h2>
         <div class="head-actions">
-          <button type="button" class="btn btn-ghost" id="share-plan">Share link</button>
           <button type="button" class="btn btn-ghost" id="save-plan">Save current…</button>
         </div>
       </div>

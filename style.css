@@ -361,6 +361,24 @@ main {
 .btn-ghost:hover {
   background: rgba(11, 110, 253, 0.08);
 }
+.btn-primary {
+  background: var(--primary);
+  color: #ffffff;
+  border-color: var(--primary);
+  box-shadow: 0 6px 18px rgba(11, 110, 253, 0.25);
+}
+.btn-primary:hover {
+  background: var(--primary-dark);
+  border-color: var(--primary-dark);
+}
+.btn-full {
+  width: 100%;
+  height: 52px;
+  font-size: 1rem;
+}
+.share-card {
+  display: flex;
+}
 .btn-small {
   height: 36px;
   padding: 0 10px;
