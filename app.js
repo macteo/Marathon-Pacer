@@ -1300,6 +1300,388 @@
     renderPlans();
   });
 
+  // ----- Share link: encode / decode -----
+  //
+  // A plan is serialized to a compact tuple form (no IDs, no field
+  // names) to keep the payload small, then deflate-compressed (when the
+  // browser supports CompressionStream) and base64url-encoded into the
+  // URL hash. The IDs are regenerated on import, so the round-trip is
+  // lossless for everything the user actually authored: target,
+  // blocks, segments, repeats, paces and final pace.
+  //
+  // Format (versioned so future changes don't break old links):
+  //   [1, target, finalPaceMin, finalPaceSec, blocks]
+  //   segment block: [0, distance, paceMin, paceSec]
+  //   group  block:  [1, repeats, [[dist, min, sec], ...]]
+
+  const SHARE_VERSION = 1;
+
+  function planToCompact(src) {
+    return [
+      SHARE_VERSION,
+      Number(src.target) || 0,
+      Number(src.finalPaceMin) || 0,
+      Number(src.finalPaceSec) || 0,
+      (src.blocks || []).map((b) => {
+        if (b.type === "segment") {
+          const s = b.segment || {};
+          return [
+            0,
+            Number(s.distance) || 0,
+            Number(s.paceMin) || 0,
+            Number(s.paceSec) || 0,
+          ];
+        }
+        return [
+          1,
+          Number(b.repeats) || 1,
+          (b.segments || []).map((s) => [
+            Number(s.distance) || 0,
+            Number(s.paceMin) || 0,
+            Number(s.paceSec) || 0,
+          ]),
+        ];
+      }),
+    ];
+  }
+
+  function compactToPlan(arr) {
+    if (!Array.isArray(arr) || arr.length < 5) throw new Error("bad share payload");
+    const [version, target, fpMin, fpSec, blocks] = arr;
+    if (version !== SHARE_VERSION) throw new Error("unsupported share version");
+    return {
+      target: parseNum(target, 42.195),
+      finalPaceMin: clampNum(parseNum(fpMin, DEFAULT_PACE_MIN), PACE_MIN_MIN, PACE_MIN_MAX),
+      finalPaceSec: clampNum(parseNum(fpSec, DEFAULT_PACE_SEC), 0, 59),
+      blocks: (Array.isArray(blocks) ? blocks : []).map((b) => {
+        if (!Array.isArray(b)) return null;
+        if (b[0] === 0) {
+          return {
+            id: uid(),
+            type: "segment",
+            segment: {
+              id: uid(),
+              distance: parseNum(b[1]),
+              paceMin: clampNum(parseNum(b[2]), PACE_MIN_MIN, PACE_MIN_MAX),
+              paceSec: clampNum(parseNum(b[3]), 0, 59),
+            },
+          };
+        }
+        if (b[0] === 1) {
+          return {
+            id: uid(),
+            type: "group",
+            repeats: clampNum(parseNum(b[1], REPEATS_MIN), REPEATS_MIN, REPEATS_MAX),
+            segments: (Array.isArray(b[2]) ? b[2] : []).map((s) => ({
+              id: uid(),
+              distance: parseNum(s && s[0]),
+              paceMin: clampNum(parseNum(s && s[1]), PACE_MIN_MIN, PACE_MIN_MAX),
+              paceSec: clampNum(parseNum(s && s[2]), 0, 59),
+            })),
+          };
+        }
+        return null;
+      }).filter(Boolean),
+    };
+  }
+
+  function bytesToBase64Url(bytes) {
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  function base64UrlToBytes(str) {
+    str = String(str).replace(/-/g, "+").replace(/_/g, "/");
+    while (str.length % 4) str += "=";
+    const bin = atob(str);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
+  // The 'c' prefix marks a compressed payload, 'u' marks an uncompressed
+  // fallback. Keeping them distinct means a browser that can encode but
+  // not decode (or vice versa) still produces a readable link.
+  async function encodeSharePayload(obj) {
+    const json = JSON.stringify(obj);
+    const bytes = new TextEncoder().encode(json);
+    try {
+      if (typeof CompressionStream !== "undefined") {
+        const cs = new CompressionStream("deflate-raw");
+        const writer = cs.writable.getWriter();
+        writer.write(bytes);
+        writer.close();
+        const buf = await new Response(cs.readable).arrayBuffer();
+        return "c" + bytesToBase64Url(new Uint8Array(buf));
+      }
+    } catch (e) {
+      console.warn("CompressionStream failed, falling back:", e);
+    }
+    return "u" + bytesToBase64Url(bytes);
+  }
+
+  async function decodeSharePayload(encoded) {
+    if (!encoded || encoded.length < 2) throw new Error("empty payload");
+    const tag = encoded.charAt(0);
+    const body = encoded.slice(1);
+    const bytes = base64UrlToBytes(body);
+    let jsonBytes = bytes;
+    if (tag === "c") {
+      if (typeof DecompressionStream === "undefined") {
+        throw new Error("decompression not supported in this browser");
+      }
+      const ds = new DecompressionStream("deflate-raw");
+      const writer = ds.writable.getWriter();
+      writer.write(bytes);
+      writer.close();
+      const buf = await new Response(ds.readable).arrayBuffer();
+      jsonBytes = new Uint8Array(buf);
+    } else if (tag !== "u") {
+      throw new Error("unknown payload tag");
+    }
+    const json = new TextDecoder().decode(jsonBytes);
+    return JSON.parse(json);
+  }
+
+  async function buildShareUrl() {
+    const compact = planToCompact(state);
+    const encoded = await encodeSharePayload(compact);
+    const base =
+      location.origin + location.pathname + (location.search || "");
+    return base + "#p=" + encoded;
+  }
+
+  // Transient toast at the bottom of the screen. Used for share-link
+  // feedback and import confirmation. Multiple calls replace the
+  // previous message.
+  let toastTimer = null;
+  function showToast(message) {
+    const el = $("#toast");
+    if (!el) return;
+    el.textContent = message;
+    el.hidden = false;
+    // Force reflow so the animation restarts on repeated calls.
+    void el.offsetWidth;
+    el.classList.add("is-visible");
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      el.classList.remove("is-visible");
+      setTimeout(() => { el.hidden = true; }, 220);
+    }, 2600);
+  }
+
+  async function handleShareClick() {
+    let url;
+    try {
+      url = await buildShareUrl();
+    } catch (e) {
+      console.error("Failed to build share URL:", e);
+      alert("Could not build share link.");
+      return;
+    }
+
+    // Prefer the native share sheet on mobile; fall back to clipboard.
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: "Run Pacer plan",
+          text: "My running pace plan",
+          url,
+        });
+        return;
+      } catch (e) {
+        if (e && e.name === "AbortError") return;
+        // Other errors: fall through to clipboard.
+      }
+    }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(url);
+        showToast("Share link copied to clipboard");
+        return;
+      }
+    } catch (e) {
+      // Clipboard blocked — last-resort prompt so the user can still copy.
+    }
+    prompt("Copy this share link:", url);
+  }
+
+  $("#share-plan").addEventListener("click", () => {
+    handleShareClick();
+  });
+
+  // ----- Share link: import on page load -----
+  //
+  // Preservation rule: before replacing the current in-memory plan with
+  // the one from the URL, save it as an auto-snapshot so it isn't lost
+  // — UNLESS it's the pristine default landing plan (nothing to save)
+  // or it already matches one of the entries in the saved-plans list.
+
+  function stripPlanIds(plan) {
+    if (!plan) return null;
+    return {
+      target: Number(plan.target) || 0,
+      finalPaceMin: Number(plan.finalPaceMin) || 0,
+      finalPaceSec: Number(plan.finalPaceSec) || 0,
+      blocks: (plan.blocks || []).map((b) => {
+        if (b && b.type === "segment") {
+          const s = b.segment || {};
+          return {
+            type: "segment",
+            segment: {
+              distance: Number(s.distance) || 0,
+              paceMin: Number(s.paceMin) || 0,
+              paceSec: Number(s.paceSec) || 0,
+            },
+          };
+        }
+        return {
+          type: "group",
+          repeats: Number(b && b.repeats) || 1,
+          segments: (b && b.segments ? b.segments : []).map((s) => ({
+            distance: Number(s.distance) || 0,
+            paceMin: Number(s.paceMin) || 0,
+            paceSec: Number(s.paceSec) || 0,
+          })),
+        };
+      }),
+    };
+  }
+
+  function plansEqual(a, b) {
+    return JSON.stringify(stripPlanIds(a)) === JSON.stringify(stripPlanIds(b));
+  }
+
+  function isDefaultLandingPlan(plan) {
+    if (!plan) return true;
+    const emptyBlocks = !plan.blocks || plan.blocks.length === 0;
+    return (
+      Math.abs((Number(plan.target) || 0) - 42.195) < 1e-9 &&
+      Number(plan.finalPaceMin) === DEFAULT_PACE_MIN &&
+      Number(plan.finalPaceSec) === DEFAULT_PACE_SEC &&
+      emptyBlocks
+    );
+  }
+
+  function currentPlanBody() {
+    return {
+      target: state.target,
+      blocks: state.blocks,
+      finalPaceMin: state.finalPaceMin,
+      finalPaceSec: state.finalPaceSec,
+    };
+  }
+
+  function autoSaveCurrentIfNeeded() {
+    const current = currentPlanBody();
+    if (isDefaultLandingPlan(current)) return null;
+    const plans = loadPlans();
+    if (plans.some((p) => plansEqual(p.plan || {}, current))) return null;
+    const ts = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const stamp =
+      ts.getFullYear() +
+      "-" + pad(ts.getMonth() + 1) +
+      "-" + pad(ts.getDate()) +
+      " " + pad(ts.getHours()) +
+      ":" + pad(ts.getMinutes());
+    const entry = {
+      id: uid(),
+      name: "Auto-saved " + stamp,
+      savedAt: Date.now(),
+      plan: JSON.parse(JSON.stringify(current)),
+    };
+    plans.push(entry);
+    persistPlans(plans);
+    return entry;
+  }
+
+  function addImportedToSavedPlans(imported) {
+    const plans = loadPlans();
+    if (plans.some((p) => plansEqual(p.plan || {}, imported))) return null;
+    const ts = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const stamp =
+      ts.getFullYear() +
+      "-" + pad(ts.getMonth() + 1) +
+      "-" + pad(ts.getDate()) +
+      " " + pad(ts.getHours()) +
+      ":" + pad(ts.getMinutes());
+    const entry = {
+      id: uid(),
+      name: "Shared " + stamp,
+      savedAt: Date.now(),
+      plan: {
+        target: imported.target,
+        blocks: JSON.parse(JSON.stringify(imported.blocks)),
+        finalPaceMin: imported.finalPaceMin,
+        finalPaceSec: imported.finalPaceSec,
+      },
+    };
+    plans.push(entry);
+    persistPlans(plans);
+    return entry;
+  }
+
+  function replaceStateWithImported(imported) {
+    state.target = parseNum(imported.target, 42.195);
+    state.blocks = Array.isArray(imported.blocks) ? imported.blocks : [];
+    state.finalPaceMin = clampNum(
+      parseNum(imported.finalPaceMin, DEFAULT_PACE_MIN),
+      PACE_MIN_MIN,
+      PACE_MIN_MAX
+    );
+    state.finalPaceSec = clampNum(
+      parseNum(imported.finalPaceSec, DEFAULT_PACE_SEC),
+      0,
+      59
+    );
+    save();
+    populateOptions(finalMin, PACE_MIN_MIN, PACE_MIN_MAX, state.finalPaceMin);
+    finalSec.value = String(state.finalPaceSec);
+    syncTargetInputs();
+    renderPlans();
+    update();
+  }
+
+  async function tryImportFromHash() {
+    const hash = location.hash || "";
+    const m = hash.match(/^#p=(.+)$/);
+    if (!m) return false;
+    let imported;
+    try {
+      const raw = await decodeSharePayload(m[1]);
+      imported = compactToPlan(raw);
+    } catch (e) {
+      console.warn("Failed to import shared plan:", e);
+      // Clear the bad hash so it doesn't keep retrying on refresh.
+      try {
+        history.replaceState(null, "", location.pathname + location.search);
+      } catch (err) {}
+      showToast("Invalid share link");
+      return false;
+    }
+
+    const autoSaved = autoSaveCurrentIfNeeded();
+    replaceStateWithImported(imported);
+    addImportedToSavedPlans(imported);
+    renderPlans();
+
+    // Remove the hash so a later refresh doesn't re-import the same
+    // plan on top of whatever the user has edited since.
+    try {
+      history.replaceState(null, "", location.pathname + location.search);
+    } catch (e) {}
+
+    if (autoSaved) {
+      showToast('Imported shared plan (previous plan kept as "' + autoSaved.name + '")');
+    } else {
+      showToast("Imported shared plan");
+    }
+    return true;
+  }
+
   // ----- Init -----
   load();
   // Make sure final pace inputs are pre-filled (for old saved state where
@@ -1315,4 +1697,17 @@
   syncTargetInputs();
   renderPlans();
   update();
+
+  // If the URL carries a shared plan, pick it up after the initial
+  // render so the auto-save hook compares against the in-memory plan
+  // that's already visible on screen.
+  tryImportFromHash();
+
+  // Also respond when the hash changes in-place — e.g. the user pastes
+  // a share link into the address bar of an already-open tab. Browsers
+  // don't reload on hash-only changes, so without this the new link
+  // would silently do nothing.
+  window.addEventListener("hashchange", () => {
+    tryImportFromHash();
+  });
 })();

@@ -103,7 +103,10 @@
     <section class="card plans-card">
       <div class="card-head">
         <h2>Saved plans</h2>
-        <button type="button" class="btn btn-ghost" id="save-plan">Save current…</button>
+        <div class="head-actions">
+          <button type="button" class="btn btn-ghost" id="share-plan">Share link</button>
+          <button type="button" class="btn btn-ghost" id="save-plan">Save current…</button>
+        </div>
       </div>
       <div id="plans-list" class="plans-list"></div>
     </section>
@@ -112,6 +115,8 @@
       <button type="button" class="btn btn-danger" id="reset-btn">Reset plan</button>
     </section>
   </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
   <footer class="app-footer">
     <p>Data is saved in your browser only. <span class="mono">v1.0</span></p>
