@@ -93,7 +93,12 @@
     </section>
 
     <section class="card chart-card">
-      <h2>Pace by distance</h2>
+      <div class="card-head">
+        <h2>Pace by distance</h2>
+        <div class="head-actions">
+          <button type="button" class="btn btn-ghost" id="export-chart">Export image</button>
+        </div>
+      </div>
       <div class="chart-wrap">
         <svg id="pace-chart" viewBox="0 0 600 280" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Area chart of pace per kilometer along the route"></svg>
       </div>
