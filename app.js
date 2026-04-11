@@ -1481,20 +1481,11 @@
       return;
     }
 
-    // Prefer the native share sheet on mobile; fall back to clipboard.
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: "Run Pacer plan",
-          text: "My running pace plan",
-          url,
-        });
-        return;
-      } catch (e) {
-        if (e && e.name === "AbortError") return;
-        // Other errors: fall through to clipboard.
-      }
-    }
+    // Always copy the bare URL to the clipboard. We intentionally do
+    // NOT use navigator.share: on iOS / Android its share sheet attaches
+    // extra text alongside the URL, and several messaging apps (iMessage,
+    // WhatsApp) then strip the #fragment when they auto-link the message,
+    // which would quietly drop the entire plan payload.
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         await navigator.clipboard.writeText(url);
@@ -1502,7 +1493,8 @@
         return;
       }
     } catch (e) {
-      // Clipboard blocked — last-resort prompt so the user can still copy.
+      // Clipboard blocked (e.g. insecure context) — fall through to the
+      // manual prompt so the user can still copy the URL by hand.
     }
     prompt("Copy this share link:", url);
   }
