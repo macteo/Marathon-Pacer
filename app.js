@@ -1300,6 +1300,322 @@
     renderPlans();
   });
 
+  // ----- Chart image export -----
+  //
+  // Clone the live <svg id="pace-chart"> into a larger wrapper SVG that
+  // adds a title bar (plan summary stats) and footer branding, then
+  // rasterise the whole thing to a PNG via a canvas and hand the user
+  // either a `file`-attached share sheet (iOS/Android — gives a real
+  // thumbnail preview in iMessage/WhatsApp), a clipboard copy, or a
+  // plain download — in that order of preference per platform.
+  //
+  // The chart SVG uses attribute-level styling (fill=, stroke=, etc.),
+  // not a linked stylesheet, so cloning it verbatim is enough — we
+  // don't need to inline any CSS to make it render standalone.
+
+  const EXPORT_W = 1200;
+  const EXPORT_H = 720;
+  const EXPORT_HEADER_H = 170;
+  const EXPORT_FOOTER_H = 70;
+  const EXPORT_CHART_W = EXPORT_W - 80;
+  const EXPORT_CHART_H = EXPORT_H - EXPORT_HEADER_H - EXPORT_FOOTER_H - 20;
+  const EXPORT_CHART_X = (EXPORT_W - EXPORT_CHART_W) / 2;
+  const EXPORT_CHART_Y = EXPORT_HEADER_H;
+
+  function currentThemeColors() {
+    // Match the on-screen chart's dark/light palette so the export
+    // looks like a screenshot of what the user sees.
+    const dark =
+      window.matchMedia &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches;
+    return {
+      dark,
+      bg: dark ? "#0b1220" : "#ffffff",
+      card: dark ? "#131a2b" : "#f8fafc",
+      text: dark ? "#e5e7eb" : "#0f172a",
+      muted: dark ? "#9ca3af" : "#64748b",
+      border: dark ? "#243049" : "#e5e7eb",
+      accent: "#0b6efd",
+    };
+  }
+
+  function buildExportSvg() {
+    const src = $("#pace-chart");
+    if (!src) return null;
+    const theme = currentThemeColors();
+
+    // Top-level wrapper SVG. Explicit xmlns is REQUIRED when the SVG
+    // is fed to new Image() via a blob URL — without it some browsers
+    // (Safari) refuse to load it.
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("xmlns", SVG_NS);
+    svg.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
+    svg.setAttribute("width", String(EXPORT_W));
+    svg.setAttribute("height", String(EXPORT_H));
+    svg.setAttribute("viewBox", `0 0 ${EXPORT_W} ${EXPORT_H}`);
+
+    // Background fill — replaces the document's transparent canvas.
+    svg.appendChild(
+      svgEl("rect", {
+        x: "0",
+        y: "0",
+        width: String(EXPORT_W),
+        height: String(EXPORT_H),
+        fill: theme.bg,
+      })
+    );
+
+    // Header: app badge + plan summary stats.
+    const r = computeFinal();
+    const avgPace = r.totalDistance > 0 ? r.totalSeconds / r.totalDistance : 0;
+
+    const brand = svgEl("text", {
+      x: "40",
+      y: "70",
+      "font-size": "34",
+      "font-weight": "700",
+      "font-family":
+        "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+      fill: theme.text,
+    });
+    brand.textContent = "Run Pacer";
+    svg.appendChild(brand);
+
+    const tagline = svgEl("text", {
+      x: "40",
+      y: "100",
+      "font-size": "18",
+      "font-family":
+        "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+      fill: theme.muted,
+    });
+    tagline.textContent = "Pace plan by segments & repeats";
+    svg.appendChild(tagline);
+
+    // Stat tiles, right-aligned.
+    const stats = [
+      { label: "Distance", value: formatDistance(r.totalDistance) },
+      { label: "Total time", value: formatHMS(r.totalSeconds) },
+      { label: "Avg pace", value: formatPace(avgPace).replace("/km", "") },
+    ];
+    const tileW = 230;
+    const tileGap = 14;
+    const tilesTotalW = tileW * stats.length + tileGap * (stats.length - 1);
+    let tileX = EXPORT_W - 40 - tilesTotalW;
+    const tileY = 36;
+    const tileH = 90;
+    for (const s of stats) {
+      svg.appendChild(
+        svgEl("rect", {
+          x: String(tileX),
+          y: String(tileY),
+          width: String(tileW),
+          height: String(tileH),
+          rx: "14",
+          fill: theme.card,
+          stroke: theme.border,
+          "stroke-width": "1",
+        })
+      );
+      const lbl = svgEl("text", {
+        x: String(tileX + tileW / 2),
+        y: String(tileY + 32),
+        "text-anchor": "middle",
+        "font-size": "15",
+        "font-weight": "500",
+        "font-family":
+          "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+        fill: theme.muted,
+      });
+      lbl.textContent = s.label;
+      svg.appendChild(lbl);
+      const val = svgEl("text", {
+        x: String(tileX + tileW / 2),
+        y: String(tileY + 68),
+        "text-anchor": "middle",
+        "font-size": "28",
+        "font-weight": "700",
+        "font-family":
+          "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+        fill: theme.text,
+      });
+      val.textContent = s.value;
+      svg.appendChild(val);
+      tileX += tileW + tileGap;
+    }
+
+    // Divider between header and chart.
+    svg.appendChild(
+      svgEl("line", {
+        x1: String(EXPORT_CHART_X),
+        y1: String(EXPORT_HEADER_H - 10),
+        x2: String(EXPORT_CHART_X + EXPORT_CHART_W),
+        y2: String(EXPORT_HEADER_H - 10),
+        stroke: theme.border,
+        "stroke-width": "1",
+      })
+    );
+
+    // Nested chart SVG — cloned verbatim, repositioned and resized.
+    // Using a nested <svg> preserves the original 600×280 coordinate
+    // system, so every path/line the renderChart() routine produced
+    // continues to work without having to remap any coordinates.
+    const chartClone = src.cloneNode(true);
+    chartClone.setAttribute("x", String(EXPORT_CHART_X));
+    chartClone.setAttribute("y", String(EXPORT_CHART_Y));
+    chartClone.setAttribute("width", String(EXPORT_CHART_W));
+    chartClone.setAttribute("height", String(EXPORT_CHART_H));
+    chartClone.setAttribute("xmlns", SVG_NS);
+    chartClone.removeAttribute("id");
+    svg.appendChild(chartClone);
+
+    // Footer.
+    svg.appendChild(
+      svgEl("line", {
+        x1: String(EXPORT_CHART_X),
+        y1: String(EXPORT_H - EXPORT_FOOTER_H + 10),
+        x2: String(EXPORT_CHART_X + EXPORT_CHART_W),
+        y2: String(EXPORT_H - EXPORT_FOOTER_H + 10),
+        stroke: theme.border,
+        "stroke-width": "1",
+      })
+    );
+    const foot = svgEl("text", {
+      x: String(EXPORT_W / 2),
+      y: String(EXPORT_H - 26),
+      "text-anchor": "middle",
+      "font-size": "16",
+      "font-family":
+        "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+      fill: theme.muted,
+    });
+    foot.textContent = "Made with Run Pacer";
+    svg.appendChild(foot);
+
+    return svg;
+  }
+
+  // Rasterise the wrapper SVG to a PNG blob at 2× scale. Using a blob
+  // URL (not a data: URL) avoids Safari's length limit on Image src and
+  // is faster for big SVGs.
+  function svgToPngBlob(svg, scale = 2) {
+    return new Promise((resolve, reject) => {
+      let serialized;
+      try {
+        serialized = new XMLSerializer().serializeToString(svg);
+      } catch (e) {
+        reject(e);
+        return;
+      }
+      // Some serializers drop the xmlns on the root if it was added via
+      // setAttribute — defensively re-inject it so the blob parses.
+      if (!/\sxmlns=/.test(serialized)) {
+        serialized = serialized.replace(
+          /^<svg/,
+          '<svg xmlns="http://www.w3.org/2000/svg"'
+        );
+      }
+      const svgBlob = new Blob([serialized], {
+        type: "image/svg+xml;charset=utf-8",
+      });
+      const url = URL.createObjectURL(svgBlob);
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.round(EXPORT_W * scale);
+          canvas.height = Math.round(EXPORT_H * scale);
+          const ctx = canvas.getContext("2d");
+          ctx.scale(scale, scale);
+          ctx.drawImage(img, 0, 0, EXPORT_W, EXPORT_H);
+          URL.revokeObjectURL(url);
+          canvas.toBlob((blob) => {
+            if (!blob) {
+              reject(new Error("canvas.toBlob returned null"));
+              return;
+            }
+            resolve(blob);
+          }, "image/png");
+        } catch (e) {
+          URL.revokeObjectURL(url);
+          reject(e);
+        }
+      };
+      img.onerror = (e) => {
+        URL.revokeObjectURL(url);
+        reject(new Error("Failed to load SVG into Image"));
+      };
+      img.src = url;
+    });
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Give the browser a tick to pick up the click before we free the
+    // object URL; some browsers abort the download if the URL is
+    // revoked synchronously.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function handleExportClick() {
+    const svg = buildExportSvg();
+    if (!svg) {
+      alert("No chart to export yet.");
+      return;
+    }
+    let blob;
+    try {
+      blob = await svgToPngBlob(svg, 2);
+    } catch (e) {
+      console.error("Chart export failed:", e);
+      alert("Could not export chart image.");
+      return;
+    }
+
+    const r = computeFinal();
+    const mins = Math.floor(r.totalSeconds / 60);
+    const filename = `run-pacer-${formatDistance(r.totalDistance)
+      .replace(/\s+/g, "")
+      .replace(/\./g, "_")}-${mins}min.png`;
+
+    // Prefer the native share sheet with the PNG as a file attachment
+    // on mobile — this is what actually gives you a proper image
+    // preview in iMessage / WhatsApp / etc., since the recipient gets
+    // a real image rather than a URL that needs server-side unfurling.
+    try {
+      if (
+        navigator.canShare &&
+        typeof File !== "undefined" &&
+        navigator.share
+      ) {
+        const file = new File([blob], filename, { type: "image/png" });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            files: [file],
+            title: "Run Pacer chart",
+          });
+          return;
+        }
+      }
+    } catch (e) {
+      if (e && e.name === "AbortError") return;
+      // Otherwise fall through to a plain download.
+    }
+
+    downloadBlob(blob, filename);
+    showToast("Chart image downloaded");
+  }
+
+  $("#export-chart").addEventListener("click", () => {
+    handleExportClick();
+  });
+
   // ----- Share link: encode / decode -----
   //
   // A plan is serialized to a compact tuple form (no IDs, no field
